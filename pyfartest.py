@@ -9,6 +9,6 @@ x = pf.signals.exponential_sweep_time(
     frequency_range=[500, 5000],
     sampling_rate=44100)
 
-ax = pf.plot.time_freq(x)
+ax = pf.plot.freq(x)
 ax[0].set_title('Exponential sweep excitation signal')
 plt.show()
