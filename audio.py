@@ -34,6 +34,8 @@ def playpinknoise(length: float, band=None) -> None:
     )
     st = time.time()
     for chunk in gen.pink_noise_gen(length, 1024, 44100, band):
+        if np.max(np.abs(chunk)) > 1:
+            print("Overload detected!!!")
         chunk = chunk * 2**15 * 0.9
         chunk = chunk.astype(np.int16).tobytes()
         stream.write(chunk)
@@ -47,10 +49,10 @@ if __name__ == "__main__":
     RATE = 44100
     from gen import pink_noise
 
-    waveform = pink_noise(30, RATE, (5000, 20000))  # Example waveform
+    waveform = pink_noise(30, RATE, (20, 200))  # Example waveform
     waveform = (waveform * 2**15 * 0.9).astype(np.int16)  # Scale to int16 range
     playaudio(waveform, RATE)
 
     # playpinknoise(
-    #     30, (100, 10000)
+    #     30, (20, 200)
     # )  # Play pink noise for 30 seconds in the range 100-10k Hz
