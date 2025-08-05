@@ -37,10 +37,9 @@ def calc_welch(
 def calc_psd(
     waveform: np.ndarray,
     rate: int,
-    start: float = 20,
-    stop: float = 20000,
+    band: tuple[float, float] = (20, 20000),
     outlength: int = 1024,
-    window=11,
+    window: float = 1 / 3,
     norm=True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -62,25 +61,41 @@ def calc_psd(
     xf = fft.rfftfreq(n, 1 / rate)
 
     # Interpolate to log scale for filtering
-    interp_func = interp1d(xf, yf, kind="linear", bounds_error=False, fill_value=0)
-    start = max(start, xf[0])
-    stop = min(stop, xf[-1])
-    log_xf = np.logspace(np.log10(start), np.log10(stop), num=outlength)
-    log_yf = interp_func(log_xf)
+    # interp_func = interp1d(xf, yf, kind="linear", bounds_error=False, fill_value=0)
+    # start = max(band[0], xf[0])
+    # stop = min(band[1], xf[-1])
+    # num = np.sum((xf >= band[0]) & (xf <= band[1]))
+    log_xf = np.logspace(np.log10(band[0]), np.log10(band[1]), num=outlength)
+    # log_yf = interp_func(log_xf)
 
     # Ensure window size is odd for median filtering
-    if window % 2 == 0:
-        window += 1
+    # if window % 2 == 0:
+    #     window += 1
 
     # Apply median filter
     # filtered_log_yf = signal.medfilt(log_yf, window)
-    filtered_log_yf = signal.savgol_filter(log_yf, window, 3, mode="nearest")
+    # filtered_log_yf = signal.savgol_filter(log_yf, window, 3, mode="nearest")
 
+    # if norm:
+    #     # Normalize the filtered spectrum to the range [0, 1]
+    #     filtered_log_yf /= np.max(filtered_log_yf)
+
+    # return log_xf, filtered_log_yf
+    # start = np.searchsorted(xf, band[0], side="left")  # включительно
+    # end = np.searchsorted(xf, band[1], side="right")  # включительно
+    # yf = signal.medfilt(yf, window)
+    # yf = signal.savgol_filter(yf, window, 3, mode="nearest")
+    # yf/=np.max(yf[start:end])
+    # window = 1 / 10
+    filtered_yf = np.zeros(len(log_xf), dtype=yf.dtype)
+    for i in range(len(log_xf)):
+        f = log_xf[i]
+        start = np.searchsorted(xf, f / 2 ** (window / 2), side="left")
+        end = np.searchsorted(xf, f * 2 ** (window / 2), side="right")
+        filtered_yf[i] = np.median(yf[start:end])
     if norm:
-        # Normalize the filtered spectrum to the range [0, 1]
-        filtered_log_yf /= np.max(filtered_log_yf)
-
-    return log_xf, filtered_log_yf
+        filtered_yf /= np.max(filtered_yf)
+    return log_xf, filtered_yf
 
 
 def octave_centers(start, stop):
@@ -122,13 +137,13 @@ if __name__ == "__main__":
     from matplotlib.ticker import FixedLocator, FixedFormatter
     import mplcursors
 
-    RATE = 44100
+    RATE = 96000
     START = 20
     STOP = 20000
-    waveform = pink_noise(30, RATE, (100, 500))  # Example waveform
-    # waveform = logsweep(START, STOP, 30, RATE)  # Example waveform
+    waveform = pink_noise(120, RATE, (500, 5000))  # Example waveform
+    # waveform = logsweep(120, RATE, (10, 30000))  # Example waveform
 
-    xf, yf = calc_psd(waveform, RATE, START, STOP, outlength=1024, window=30)
+    xf, yf = calc_psd(waveform, RATE)
 
     # Apply correction factor for pink noise 3db/octave
     yf *= xf / xf[0]

@@ -34,10 +34,9 @@ def linsweep(
 
 
 def logsweep(
-    start: float = 20,
-    stop: float = 20000,
     length: float = 10,
     rate=44100,
+    band: tuple[float, float] = (20, 20000),
 ) -> np.ndarray[np.float64]:
     """
     Generate a logarithmic frequency sweep from start to stop over the specified length in seconds.
@@ -57,6 +56,7 @@ def logsweep(
     - Result amplitude is normalized to the range [-1, 1].
     """
     num_samples = int(length * rate)
+    start, stop = band
     t = np.linspace(0, length, num_samples, endpoint=False, dtype=np.float64)
     K = length * start / math.log(stop / start)
     L = length / math.log(stop / start)
