@@ -4,11 +4,14 @@ import math
 from scipy import signal
 from typing import Generator
 from time import time
+from numpy.typing import NDArray
 
 
 def linsweep(
-    start: float = 20, stop: float = 20000, length: float = 10, rate=44100
-) -> np.ndarray[np.float64]:
+    length: float = 10,
+    rate: int = 44100,
+    band: tuple[float, float] = (20, 20e3),
+) -> NDArray[np.float64]:
     """
     Generate a linear frequency sweep from start to stop over the specified length in seconds.
 
@@ -26,18 +29,15 @@ def linsweep(
     """
     num_samples = int(length * rate)
     t = np.linspace(0, length, num_samples, endpoint=False, dtype=np.float64)
-    waveform = np.sin(
-        t * np.pi * (t * (stop - start) / length + 2 * start),
-        dtype=np.float64,
-    )
+    waveform = np.sin(t * np.pi * (t * (band[1] - band[0]) / length + 2 * band[0]))
     return waveform
 
 
 def logsweep(
     length: float = 10,
-    rate=44100,
-    band: tuple[float, float] = (20, 20000),
-) -> np.ndarray[np.float64]:
+    rate: int = 44100,
+    band: tuple[float, float] = (20, 20e3),
+) -> NDArray[np.float64]:
     """
     Generate a logarithmic frequency sweep from start to stop over the specified length in seconds.
 
@@ -56,20 +56,19 @@ def logsweep(
     - Result amplitude is normalized to the range [-1, 1].
     """
     num_samples = int(length * rate)
-    start, stop = band
     t = np.linspace(0, length, num_samples, endpoint=False, dtype=np.float64)
-    K = length * start / math.log(stop / start)
-    L = length / math.log(stop / start)
+    K = length * band[0] / math.log(band[1] / band[0])
+    L = length / math.log(band[1] / band[0])
     waveform = np.sin(2 * np.pi * K * (np.exp(t / L) - 1))
 
     return waveform
 
 
 def tone(
-    freq: float = 20,
     length: float = 10,
     rate=44100,
-) -> np.ndarray[np.float64]:
+    freq: float = 1e3,
+) -> NDArray[np.float64]:
     """
     Generates a sine wave of a specified frequency, duration, and amplitude.
     Parameters:
@@ -92,31 +91,16 @@ def tone(
     return waveform
 
 
-def noise(length: float = 10, rate=44100) -> np.ndarray[np.float64]:
-    """
-    Generates a normalized white noise waveform.
-    Args:
-        length (float, optional): Duration of the noise in seconds. Defaults to 10.
-        rate (int, optional): Sample rate in Hz. Defaults to 44100.
-    Returns:
-        np.ndarray: Array containing the normalized white noise samples.
-    """
-
-    num_samples = int(length * rate)
-    waveform = np.random.randn(num_samples, dtype=np.float64)
-    return waveform
-
-
 def pink_noise(
     length: float,
     rate: int,
     band: tuple[float, float] | None = None,
-) -> np.ndarray[np.float64]:
+) -> NDArray[np.float64]:
     """
     Generate pink noise over the specified length in seconds.
 
     Parameters:
-    - start: Starting frequency in Hz.
+    - band[0]: Starting frequency in Hz.
     - stop: Ending frequency in Hz.
     - length: Length of the noise in seconds.
     - rate: Sample rate in Hz.
@@ -128,12 +112,7 @@ def pink_noise(
     - Result amplitude is normalized to the range [-1, 1].
     """
     num_samples = int(length * rate)
-    waveform = np.random.randn(num_samples)
-    # Filter the noise to given band
-    if band:
-        sos = signal.butter(4, band, btype="band", fs=rate, output="sos")
-        waveform = signal.sosfilt(sos, waveform)
-    # sos2 = signal.butter(1, 1, btype="low", fs=rate, output="sos")
+    waveform = np.random.uniform(-1, 1, num_samples)
 
     # Filter the noise for 3 db/octave slope
     # Coeffs for pink noise approximation from https://www.dsprelated.com/freebooks/SASP/Example_Synthesis_1_F_Noise.html
@@ -142,6 +121,11 @@ def pink_noise(
 
     waveform = signal.lfilter(b, a, waveform)
 
+    if band:
+        # Filter the noise to given band
+        sos = signal.butter(4, band, btype="band", fs=rate, output="sos")
+        waveform = signal.sosfilt(sos, waveform)
+
     # Normalize the waveform to the range [-1, 1]
     waveform = waveform / np.max(np.abs(waveform))
 
@@ -149,49 +133,52 @@ def pink_noise(
 
 
 def pink_noise_gen(
-    length: float,
     chunksize: int,
-    rate: int,
+    rate: int = 44100,
     band: tuple[float, float] | None = None,
-) -> Generator[np.ndarray[np.float64], None, None]:
+) -> Generator[NDArray[np.float64], None, None]:
+
     if band:
         sos = signal.butter(4, band, btype="band", fs=rate, output="sos")
+
     b = [0.049922035, -0.095993537, 0.050612699, -0.004408786]
     a = [1, -2.494956002, 2.017265875, -0.522189400]
-    st = time()
-    med = 1
-    while time() - st < length:
-        waveform = np.random.randn(chunksize)
+
+    while True:
+        waveform = np.random.uniform(-1, 1, chunksize)
+        waveform = signal.lfilter(b, a, waveform)
         if band:
             waveform = signal.sosfilt(sos, waveform)
-        waveform = signal.lfilter(b, a, waveform)
-        med = (
-            20 * med + np.max(np.abs(waveform))
-        ) / 21  # Using sigma filtering for volume control
-        waveform = waveform / med / 2
-        # print(np.max(waveform), med)
-        yield waveform
+        yield waveform / 0.3
 
 
 if __name__ == "__main__":
     RATE = 44100
 
-    lin = linsweep(500, 5000, 10, RATE)
-    log = logsweep(500, 5000, 10, RATE)
-    pnoise = pink_noise(500, 5000, 10, RATE)
+    # lin = linsweep(500, 5000, 10, RATE)
+    # log = logsweep(500, 5000, 10, RATE)
+    # pnoise = pink_noise(500, 5000, 10, RATE)
 
-    from analyse import calc_fft
+    # from analyse import calc_fft
 
-    linx, liny = calc_fft(lin, RATE)
-    logx, logy = calc_fft(log, RATE)
-    pnoisex, pnoisey = calc_fft(pnoise, RATE)
+    # linx, liny = calc_fft(lin, RATE)
+    # logx, logy = calc_fft(log, RATE)
+    # pnoisex, pnoisey = calc_fft(pnoise, RATE)
 
-    plt.semilogx(linx, 20 * np.log10(liny))
-    plt.semilogx(logx, 20 * np.log10(logy))
-    plt.semilogx(pnoisex, 20 * np.log10(pnoisey))
+    # plt.semilogx(linx, 20 * np.log10(liny))
+    # plt.semilogx(logx, 20 * np.log10(logy))
+    # plt.semilogx(pnoisex, 20 * np.log10(pnoisey))
 
-    plt.title("FFT of Linear Sweep")
-    plt.xlabel("Frequency (Hz)")
-    plt.ylabel("Power (dB)")
-    plt.xlim(20, 20000)
-    plt.show()
+    # plt.title("FFT of Linear Sweep")
+    # plt.xlabel("Frequency (Hz)")
+    # plt.ylabel("Power (dB)")
+    # plt.xlim(20, 20000)
+    # plt.show()
+
+    # # # pink_noise_gen example usage
+    # gen = pink_noise_gen(1024, RATE)
+    # for i in range(100):
+    #     chunk = next(gen)
+
+    # wf = pink_noise(100, RATE)
+    # print(np.median(np.abs(wf)))
