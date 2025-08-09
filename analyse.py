@@ -43,55 +43,29 @@ def calc_psd(
     norm=True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Perform FFT on the waveform and return the frequency bins and magnitudes.
+    Compute the Power Spectral Density (PSD) of an audio waveform using FFT and median filtering.
 
     Parameters:
-    - waveform: Input audio signal as a 1D numpy array.
-    - rate: Sampling rate of the audio signal in Hz.
-    - outlength: Number of frequency bins in the output spectrum (default: 1024).
-    - window: Kernel size for median filtering the spectrum (default: 101).
-
+        waveform (np.ndarray): Input audio signal as a 1D numpy array.
+        rate (int): Sampling rate of the audio signal in Hz.
+        band (tuple[float, float], optional): Frequency range (in Hz) to analyze, as (low, high). Default is (20, 20000).
+        outlength (int, optional): Number of frequency bins in the output spectrum. Default is 1024.
+        window (float, optional): Width (in octaves) of the median filter window applied to the spectrum. Default is 1/3.
+        norm (bool, optional): If True, normalize the output magnitudes to a maximum of 1. Default is True.
+    
     Returns:
-    - A tuple containing:
-        - xf: Frequency bins (in Hz).
-        - yf: Magnitudes of the FFT (in linear scale).
+        tuple[np.ndarray, np.ndarray]:
+            - log_xf: Logarithmically spaced frequency bins (in Hz).
+            - filtered_yf: Median-filtered PSD magnitudes (linear scale), optionally normalized.
     """
     n = len(waveform)
     yf = np.square(np.abs(fft.rfft(waveform))) / n / rate
     xf = fft.rfftfreq(n, 1 / rate)
-
-    # Interpolate to log scale for filtering
-    # interp_func = interp1d(xf, yf, kind="linear", bounds_error=False, fill_value=0)
-    # start = max(band[0], xf[0])
-    # stop = min(band[1], xf[-1])
-    # num = np.sum((xf >= band[0]) & (xf <= band[1]))
     log_xf = np.logspace(np.log10(band[0]), np.log10(band[1]), num=outlength)
-    # log_yf = interp_func(log_xf)
-
-    # Ensure window size is odd for median filtering
-    # if window % 2 == 0:
-    #     window += 1
-
-    # Apply median filter
-    # filtered_log_yf = signal.medfilt(log_yf, window)
-    # filtered_log_yf = signal.savgol_filter(log_yf, window, 3, mode="nearest")
-
-    # if norm:
-    #     # Normalize the filtered spectrum to the range [0, 1]
-    #     filtered_log_yf /= np.max(filtered_log_yf)
-
-    # return log_xf, filtered_log_yf
-    # start = np.searchsorted(xf, band[0], side="left")  # включительно
-    # end = np.searchsorted(xf, band[1], side="right")  # включительно
-    # yf = signal.medfilt(yf, window)
-    # yf = signal.savgol_filter(yf, window, 3, mode="nearest")
-    # yf/=np.max(yf[start:end])
-    # window = 1 / 10
     filtered_yf = np.zeros(len(log_xf), dtype=yf.dtype)
-    for i in range(len(log_xf)):
-        f = log_xf[i]
-        start = np.searchsorted(xf, f / 2 ** (window / 2), side="left")
-        end = np.searchsorted(xf, f * 2 ** (window / 2), side="right")
+    starts = np.searchsorted(xf, log_xf / 2 ** (window / 2), side="left")
+    ends = np.searchsorted(xf, log_xf * 2 ** (window / 2), side="right")
+    for i, (start, end) in enumerate(zip(starts, ends)):
         filtered_yf[i] = np.median(yf[start:end])
     if norm:
         filtered_yf /= np.max(filtered_yf)
