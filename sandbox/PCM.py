@@ -1,6 +1,6 @@
 # import pyaudio
-from gen import tone
-from audio import listinputs, listoutputs
+from utils.generators import tone
+from utils.audio import listinputs, listoutputs
 from pprint import pp
 import numpy as np
 from matplotlib import pyplot as plt

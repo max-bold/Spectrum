@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.fft import rfft, rfftfreq
 from scipy.signal import medfilt
-from gen import logsweep
+from utils.generators import logsweep
 from analyse import calc_psd
 
 FREQ = 1000

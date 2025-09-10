@@ -1,5 +1,5 @@
 import dearpygui.dearpygui as dpg
-from audio import listinputs, listoutputs
+from utils.audio import listinputs, listoutputs
 from time import time, sleep
 from threading import Thread
 

@@ -107,7 +107,7 @@ def octave_centers(start, stop):
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from gen import pink_noise, linsweep, logsweep
+    from utils.generators import pink_noise, linsweep, logsweep
     from matplotlib.ticker import FixedLocator, FixedFormatter
     import mplcursors
 

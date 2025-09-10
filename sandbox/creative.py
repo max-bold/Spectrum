@@ -1,4 +1,4 @@
-from gen import pink_noise, logsweep
+from utils.generators import pink_noise, logsweep
 from analyse import calc_psd
 import pyaudio
 import numpy as np

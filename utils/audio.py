@@ -1,7 +1,7 @@
 import pyaudio
 import numpy as np
 import time
-import gen
+import utils.generators as generators
 from pprint import pp
 import matplotlib.pyplot as plt
 from threading import Thread
@@ -37,7 +37,7 @@ def playpinknoise(length: float, band=None) -> None:
         frames_per_buffer=chunk_size,
     )
     st = time.time()
-    for chunk in gen.pink_noise_gen(length, 1024, 44100, band):
+    for chunk in generators.pink_noise_gen(length, 1024, 44100, band):
         if np.max(np.abs(chunk)) > 1:
             print("Overload detected!!!")
         chunk = chunk * 2**15 * 0.9

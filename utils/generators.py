@@ -3,8 +3,11 @@ import matplotlib.pyplot as plt
 import math
 from scipy import signal
 from typing import Generator
+from abc import ABC, abstractmethod
 from time import time
 from numpy.typing import NDArray
+from threading import Thread
+from queue import Queue
 
 
 def linsweep(
@@ -37,6 +40,7 @@ def logsweep(
     length: float = 10,
     rate: int = 44100,
     band: tuple[float, float] = (20, 20e3),
+    padding: float = 0.2,
 ) -> NDArray[np.float64]:
     """
     Generate a logarithmic frequency sweep from start to stop over the specified length in seconds.
@@ -55,11 +59,19 @@ def logsweep(
     Notes:
     - Result amplitude is normalized to the range [-1, 1].
     """
-    num_samples = int(length * rate)
-    t = np.linspace(0, length, num_samples, endpoint=False, dtype=np.float64)
+    pad_samples = int(padding * rate)
+    num_samples = int(length * rate) - pad_samples * 2
+    t = np.linspace(
+        0,
+        length - padding * 2,
+        num_samples,
+        endpoint=False,
+        dtype=np.float64,
+    )
     K = length * band[0] / math.log(band[1] / band[0])
     L = length / math.log(band[1] / band[0])
-    waveform = np.sin(2 * np.pi * K * (np.exp(t / L) - 1))
+    waveform = np.zeros(num_samples + pad_samples * 2, dtype=np.float64)
+    waveform[pad_samples:-pad_samples] = np.sin(2 * np.pi * K * (np.exp(t / L) - 1))
 
     return waveform
 
@@ -137,7 +149,7 @@ def pink_noise_gen(
     rate: int = 44100,
     band: tuple[float, float] | None = None,
 ) -> Generator[NDArray[np.float64], None, None]:
-
+    sos = None
     if band:
         sos = signal.butter(4, band, btype="band", fs=rate, output="sos")
 
@@ -147,16 +159,79 @@ def pink_noise_gen(
     while True:
         waveform = np.random.uniform(-1, 1, chunksize)
         waveform = signal.lfilter(b, a, waveform)
-        if band:
+        if sos:
             waveform = signal.sosfilt(sos, waveform)
         yield waveform / 0.3
+
+
+class Signal_generator(Thread, ABC):
+    def __init__(self) -> None:
+        self.output_queue = Queue(maxsize=10)
+        self.stop_signal = False
+        return super().__init__()
+
+    def stop(self):
+        self.stop_signal = True
+
+
+class PinkNoiseGenerator(Signal_generator):
+    def __init__(
+        self,
+        rate: int = 44100,
+        chunksize: int = 1024,
+        length: float | None = None,
+        band: tuple[float, float] | None = None,
+        boost: float = 3.0,
+    ) -> None:
+        self.rate = rate
+        self.chunksize = chunksize
+        self.length = length * rate if length else None
+        self.band = band
+        self.boost = boost
+        return super().__init__()
+
+    def run(self) -> None:
+        sent_samples = 0
+        while not self.stop_signal:
+            noise = np.random.uniform(-1, 1, self.chunksize)
+            noise = signal.lfilter(
+                [0.049922035, -0.095993537, 0.050612699, -0.004408786],
+                [1, -2.494956002, 2.017265875, -0.522189400],
+                noise,
+            )
+            if self.band:
+                sos = signal.butter(
+                    4,
+                    self.band,
+                    btype="band",
+                    fs=self.rate,
+                    output="sos",
+                )
+                noise = signal.sosfilt(sos, noise)
+            if isinstance(noise, np.ndarray[np.float64]):
+                noise = noise / self.boost
+                self.output_queue.put(noise)
+            else:
+                raise ValueError("Noise generation failed")
+            sent_samples += self.chunksize
+            if self.length and sent_samples >= self.length:
+                self.stop_signal = True
+        return
+
+    def stop(self):
+        self.stop_signal = True
+        if self.output_queue.full():
+            self.output_queue.get()
 
 
 if __name__ == "__main__":
     RATE = 44100
 
     # lin = linsweep(500, 5000, 10, RATE)
-    # log = logsweep(500, 5000, 10, RATE)
+    log = logsweep(10, RATE, (20, 20000))
+    t = np.arange(len(log)) / RATE
+    plt.plot(t, log)
+    plt.show()
     # pnoise = pink_noise(500, 5000, 10, RATE)
 
     # from analyse import calc_fft

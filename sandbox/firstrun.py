@@ -1,6 +1,6 @@
-from gen import pink_noise
+from utils.generators import pink_noise
 import numpy as np
-from audio import playaudio
+from utils.audio import playaudio
 
 RATE = 96000
 BUFFER = 1024 * 4
