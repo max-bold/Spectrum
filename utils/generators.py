@@ -175,10 +175,23 @@ class Signal_generator(Thread, ABC):
 
 
 class PinkNoiseGenerator(Signal_generator):
+    """
+    PinkNoiseGenerator generates pink noise signals with optional bandpass filtering.
+    Args:
+        rate (int): Sample rate in Hz.
+        chunksize (int): Number of samples per generated chunk.
+        length (float | None, optional): Total duration of noise in seconds. If None, runs indefinitely.
+        band (tuple[float, float] | None, optional): Frequency band (low, high) for bandpass filtering. If None, no filtering is applied.
+        boost (float, optional): Amplitude scaling factor for the generated noise. Default is 3.0.
+    Methods:
+        start(): Starts generating pink noise and puts chunks into the output queue until stopped or length is reached.
+        stop(): Signals the generator to stop.
+    """
+
     def __init__(
         self,
-        rate: int = 44100,
-        chunksize: int = 1024,
+        rate: int,
+        chunksize: int,
         length: float | None = None,
         band: tuple[float, float] | None = None,
         boost: float = 3.0,
@@ -203,16 +216,13 @@ class PinkNoiseGenerator(Signal_generator):
                 sos = signal.butter(
                     4,
                     self.band,
-                    btype="band",
+                    btype="bandpass",
                     fs=self.rate,
                     output="sos",
                 )
                 noise = signal.sosfilt(sos, noise)
-            if isinstance(noise, np.ndarray[np.float64]):
                 noise = noise / self.boost
                 self.output_queue.put(noise)
-            else:
-                raise ValueError("Noise generation failed")
             sent_samples += self.chunksize
             if self.length and sent_samples >= self.length:
                 self.stop_signal = True
