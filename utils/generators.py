@@ -1,12 +1,14 @@
 import numpy as np
-import matplotlib.pyplot as plt
+
+# import matplotlib.pyplot as plt
 import math
 from scipy import signal
 from typing import Generator
 from abc import ABC, abstractmethod
-from time import time
+
+# from time import time
 from numpy.typing import NDArray
-from threading import Thread
+from threading import Thread, Event
 from queue import Queue
 
 
@@ -161,17 +163,35 @@ def pink_noise_gen(
         waveform = signal.lfilter(b, a, waveform)
         if sos:
             waveform = signal.sosfilt(sos, waveform)
-        yield waveform / 0.3
+        yield np.asarray(waveform, np.float64) / 0.3
 
 
 class Signal_generator(Thread, ABC):
+    """
+    A base class for signal generators, inheriting from Thread and ABC.
+    Attributes:
+        output_queue (Queue): A queue to hold generated signal data, with a maximum size of 10.
+        stop_signal (Event): An event to signal the generator to stop.
+    Methods:
+        __init__(): Initializes the signal generator, output queue, and stop signal. When overridden, remember to call super().__init__().
+        run(): An abstract method that must be implemented by subclasses to define the signal generation logic.
+        stop(): Signals the generator to stop. If the output queue is full, removes one item before setting the stop signal.
+    """
+
     def __init__(self) -> None:
         self.output_queue = Queue(maxsize=10)
-        self.stop_signal = False
+        self._stop_signal = Event()
         return super().__init__()
 
+    @abstractmethod
+    def run(self) -> None:
+        pass
+
     def stop(self):
-        self.stop_signal = True
+        if self.output_queue.full():
+            self.output_queue.get()
+        self._stop_signal.set()
+        return self.join()
 
 
 class PinkNoiseGenerator(Signal_generator):
@@ -198,72 +218,109 @@ class PinkNoiseGenerator(Signal_generator):
     ) -> None:
         self.rate = rate
         self.chunksize = chunksize
-        self.length = length * rate if length else None
+        self.length = int(length * rate) if length else None
         self.band = band
         self.boost = boost
         return super().__init__()
 
     def run(self) -> None:
         sent_samples = 0
-        while not self.stop_signal:
-            noise = np.random.uniform(-1, 1, self.chunksize)
-            noise = signal.lfilter(
-                [0.049922035, -0.095993537, 0.050612699, -0.004408786],
-                [1, -2.494956002, 2.017265875, -0.522189400],
-                noise,
+        sos = None
+        if self.band:
+            sos = signal.butter(
+                4,
+                self.band,
+                btype="bandpass",
+                fs=self.rate,
+                output="sos",
             )
-            if self.band:
-                sos = signal.butter(
-                    4,
-                    self.band,
-                    btype="bandpass",
-                    fs=self.rate,
-                    output="sos",
-                )
+        B = [0.049922035, -0.095993537, 0.050612699, -0.004408786]
+        A = [1, -2.494956002, 2.017265875, -0.522189400]
+        while not self._stop_signal.is_set() or (
+            self.length and sent_samples < self.length
+        ):
+            chunk_l = (
+                min(self.chunksize, self.length - sent_samples)
+                if self.length
+                else self.chunksize
+            )
+            noise = np.random.uniform(-1, 1, chunk_l)
+            noise = signal.lfilter(B, A, noise)
+            if sos is not None:
                 noise = signal.sosfilt(sos, noise)
-                noise = noise / self.boost
-                self.output_queue.put(noise)
-            sent_samples += self.chunksize
-            if self.length and sent_samples >= self.length:
-                self.stop_signal = True
+            noise = np.asarray(noise, dtype=np.float64) * self.boost
+            self.output_queue.put(noise)
+            sent_samples += chunk_l
         return
 
-    def stop(self):
-        self.stop_signal = True
-        if self.output_queue.full():
-            self.output_queue.get()
+
+class LogSweepGenerator(Signal_generator):
+    def __init__(
+        self,
+        rate: int,
+        chunksize: int,
+        band: tuple[float, float] = (20, 20e3),
+        length: float = 10,
+    ) -> None:
+        self.rate = rate
+        self.chunksize = chunksize
+        self.band = np.array(band) / rate
+        self.length = int(length * rate)
+        return super().__init__()
+
+    def run(self) -> None:
+        k = self.length * self.band[0] / np.log(self.band[1] / self.band[0])
+        l = self.length / np.log(self.band[1] / self.band[0])
+        t = np.arange(0, self.length, dtype=np.float64)
+        for start in range(0, self.length, self.chunksize):
+            if self._stop_signal.is_set():
+                break
+            stop = min(start + self.chunksize, self.length)
+            chunk_t = t[start:stop]
+            waveform = np.sin(2 * np.pi * k * (np.exp(chunk_t / l) - 1))
+            self.output_queue.put(waveform)
 
 
 if __name__ == "__main__":
-    RATE = 44100
+    from scipy.fft import rfft, rfftfreq
+    import matplotlib.pyplot as plt
 
-    # lin = linsweep(500, 5000, 10, RATE)
-    log = logsweep(10, RATE, (20, 20000))
-    t = np.arange(len(log)) / RATE
-    plt.plot(t, log)
-    plt.show()
-    # pnoise = pink_noise(500, 5000, 10, RATE)
+    RATE = 96000
+    CHUNKSIZE = 1024 * 40
+    BAND = (100, 1e3)
+    LENGTH = 30  # seconds
 
-    # from analyse import calc_fft
+    # Generate pink noise
 
-    # linx, liny = calc_fft(lin, RATE)
-    # logx, logy = calc_fft(log, RATE)
-    # pnoisex, pnoisey = calc_fft(pnoise, RATE)
+    # chunks_to_read = int(RATE * LENGTH / CHUNKSIZE)
+    # gen = PinkNoiseGenerator(RATE, CHUNKSIZE)
+    # gen.start()
+    # data = gen.output_queue.get()
+    # for i in range(chunks_to_read):
+    #     data = np.concatenate((data, gen.output_queue.get()))
+    # gen.stop()
+    # gen.join()
 
-    # plt.semilogx(linx, 20 * np.log10(liny))
-    # plt.semilogx(logx, 20 * np.log10(logy))
-    # plt.semilogx(pnoisex, 20 * np.log10(pnoisey))
+    # Generate log sweep
 
-    # plt.title("FFT of Linear Sweep")
-    # plt.xlabel("Frequency (Hz)")
-    # plt.ylabel("Power (dB)")
-    # plt.xlim(20, 20000)
+    # gen = LogSweepGenerator(RATE, CHUNKSIZE, BAND, LENGTH)
+    # gen.start()
+
+    # data = gen.output_queue.get()
+    # while gen.is_alive() or not gen.output_queue.empty():
+    #     data = np.concatenate((data, gen.output_queue.get()))
+
+    # Calculate FFT and plot result
+
+    # print(np.max(data))
+    # xf = rfftfreq(len(data), 1 / RATE)
+    # yf = np.abs(rfft(data)) / len(data)
+    # yf *= np.sqrt(xf)
+    # filtered_yf = signal.medfilt(yf, 11)
+    # filtered_yf = np.clip(filtered_yf, 1e-12, None)
+    # plt.semilogx(xf, 20 * np.log10(filtered_yf))
+    # plt.xlim(20, 20e3)
+    # # xt = np.arange(len(data)) / RATE
+    # # plt.plot(xt, data)
+
     # plt.show()
-
-    # # # pink_noise_gen example usage
-    # gen = pink_noise_gen(1024, RATE)
-    # for i in range(100):
-    #     chunk = next(gen)
-
-    # wf = pink_noise(100, RATE)
-    # print(np.median(np.abs(wf)))
