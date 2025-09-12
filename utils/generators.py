@@ -51,16 +51,17 @@ def logsweep(
     Returns:
         np.ndarray: Logarithmic sweep signal, normalized to [-1, 1].
     """
-    pad_samples = int(padding * rate)
-    num_samples = int(length * rate) - pad_samples * 2
+    num_samples = int(length * rate)
     t = np.linspace(
-        0, length - padding * 2, num_samples, endpoint=False, dtype=np.float64
+        0,
+        length - padding * 2,
+        num_samples,
+        endpoint=False,
+        dtype=np.float64,
     )
     K = length * band[0] / math.log(band[1] / band[0])
     L = length / math.log(band[1] / band[0])
-    sweep = np.zeros(num_samples + pad_samples * 2, dtype=np.float64)
-    sweep[pad_samples:-pad_samples] = np.sin(2 * np.pi * K * (np.exp(t / L) - 1))
-    sweep /= np.max(np.abs(sweep[pad_samples:-pad_samples]))
+    sweep = np.sin(2 * np.pi * K * (np.exp(t / L) - 1))
     return sweep
 
 
@@ -143,6 +144,12 @@ class SignalGenerator(Thread, ABC):
             self.output_queue.get()
         self._stop_signal.set()
         return self.join()
+    
+    def get(self) -> NDArray[np.float64]:
+        """Get one chunk of generated signal from the output queue."""
+        chunk = self.output_queue.get()
+        self.output_queue.task_done()
+        return chunk
 
 
 class PinkNoiseGenerator(SignalGenerator):
@@ -197,6 +204,7 @@ class PinkNoiseGenerator(SignalGenerator):
             noise *= self.boost
             self.output_queue.put(noise)
             sent_samples += chunk_l
+        print(f"Generator stoped after {sent_samples} samples.")
 
 
 class LogSweepGenerator(SignalGenerator):
@@ -234,6 +242,7 @@ class LogSweepGenerator(SignalGenerator):
             chunk_t = t[start:stop]
             sweep = np.sin(2 * np.pi * k * (np.exp(chunk_t / l) - 1))
             self.output_queue.put(sweep)
+        print(f"Sweep generator stoped after {self.length} samples.")
 
 
 if __name__ == "__main__":
@@ -282,7 +291,7 @@ if __name__ == "__main__":
     axes[0].semilogx(xf, 20 * np.log10(filtered_yf))
     axes[0].set_xlim(20, 20e3)
     axes[0].grid(True, "both")
-    axes[0].autoscale(True,"y")
+    axes[0].autoscale(True, "y")
     axes[1].plot(xt, data)
     axes[1].grid(True, "both")
 
