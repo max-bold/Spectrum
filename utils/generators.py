@@ -9,6 +9,12 @@ from numpy.typing import NDArray
 from threading import Thread, Event
 from queue import Queue
 
+from plugins import Pluggable
+
+# Pink noise filter coefficients (see dsprelated.com)
+PINKING_B = [0.049922035, -0.095993537, 0.050612699, -0.004408786]
+PINKING_A = [1, -2.494956002, 2.017265875, -0.522189400]
+
 
 def linsweep(
     length: float = 10,
@@ -105,10 +111,7 @@ def pink_noise(
     """
     num_samples = int(length * rate)
     noise = np.random.uniform(-1, 1, num_samples)
-    # Pink noise filter coefficients (see dsprelated.com)
-    b = [0.049922035, -0.095993537, 0.050612699, -0.004408786]
-    a = [1, -2.494956002, 2.017265875, -0.522189400]
-    noise = signal.lfilter(b, a, noise)
+    noise = signal.lfilter(PINKING_B, PINKING_A, noise)
     if band:
         sos = signal.butter(4, band, btype="band", fs=rate, output="sos")
         noise = signal.sosfilt(sos, noise)
@@ -144,7 +147,7 @@ class SignalGenerator(Thread, ABC):
             self.output_queue.get()
         self._stop_signal.set()
         return self.join()
-    
+
     def get(self) -> NDArray[np.float64]:
         """Get one chunk of generated signal from the output queue."""
         chunk = self.output_queue.get()
@@ -186,8 +189,6 @@ class PinkNoiseGenerator(SignalGenerator):
             sos = signal.butter(
                 4, self.band, btype="bandpass", fs=self.rate, output="sos"
             )
-        b = [0.049922035, -0.095993537, 0.050612699, -0.004408786]
-        a = [1, -2.494956002, 2.017265875, -0.522189400]
         while not self._stop_signal.is_set() and (
             self.length is None or sent_samples < self.length
         ):
@@ -197,7 +198,7 @@ class PinkNoiseGenerator(SignalGenerator):
                 else self.chunksize
             )
             noise = np.random.uniform(-1, 1, chunk_l)
-            noise = signal.lfilter(b, a, noise)
+            noise = signal.lfilter(PINKING_B, PINKING_A, noise)
             if sos is not None:
                 noise = signal.sosfilt(sos, noise)
             noise = np.asarray(noise, dtype=np.float64)
@@ -242,6 +243,108 @@ class LogSweepGenerator(SignalGenerator):
             chunk_t = t[start:stop]
             sweep = np.sin(2 * np.pi * k * (np.exp(chunk_t / l) - 1))
             self.output_queue.put(sweep)
+        print(f"Sweep generator stoped after {self.length} samples.")
+
+
+class PinkNoiseGeneratorPluggable(Pluggable):
+    """
+    Pluggable pink noise generator with optional bandpass filtering.
+
+    Args:
+        rate (int): Sample rate in Hz.
+        chunksize (int): Samples per chunk.
+        length (float|None): Duration in seconds (None for infinite).
+        band (tuple|None): (low, high) bandpass filter in Hz.
+        boost (float): Amplitude scaling factor.
+    """
+
+    def __init__(
+        self,
+        rate: int,
+        chunksize: int,
+        length: float | None = None,
+        band: tuple[float, float] | None = None,
+        boost: float = 3.0,
+    ) -> None:
+        self.rate = rate
+        self.chunksize = chunksize
+        self.length = int(length * rate) if length else None
+        self.band = band
+        self.boost = boost
+        super().__init__()
+
+    def run(self) -> None:
+        sent_samples = 0
+        if self.band:
+            sos = signal.butter(
+                4, self.band, btype="bandpass", fs=self.rate, output="sos"
+            )
+        else:
+            sos = None
+        while not self.stop_event.is_set() and (
+            self.length is None or sent_samples < self.length
+        ):
+            if self.length:
+                chunk_l = min(self.chunksize, self.length - sent_samples)
+            else:
+                chunk_l = self.chunksize
+            noise = np.random.uniform(-1, 1, chunk_l)
+            noise = signal.lfilter(PINKING_B, PINKING_A, noise)
+            if sos is not None:
+                noise = signal.sosfilt(sos, noise)
+            noise = np.asarray(noise, dtype=np.float64)
+            noise *= self.boost
+            output = np.column_stack((noise, noise))
+            self.output_queue.put(output)
+            sent_samples += chunk_l
+        print(f"Generator stoped after {sent_samples} samples.")
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.output_queue.full():
+            """Generator will block on full queue,
+            so we need to free one slot for it to reshoot
+            and proceed the stop_event."""
+            self.output_queue.get()
+
+class LogSweepGeneratorPluggable(Pluggable):
+    """
+    Threaded logarithmic sweep generator.
+
+    Args:
+        rate (int): Sample rate in Hz.
+        chunksize (int): Samples per chunk.
+        band (tuple): (start_freq, stop_freq) in Hz.
+        length (float): Duration in seconds.
+    """
+
+    def __init__(
+        self,
+        rate: int,
+        chunksize: int,
+        band: tuple[float, float] = (20, 20000),
+        length: float = 10,
+    ) -> None:
+        self.rate = rate
+        self.chunksize = chunksize
+        self.band = np.array(band) / rate
+        self.length = int(length * rate)
+        return super().__init__()
+
+    def run(self) -> None:
+        k = self.length * self.band[0] / np.log(self.band[1] / self.band[0])
+        l = self.length / np.log(self.band[1] / self.band[0])
+        t = np.arange(0, self.length, dtype=np.float64)
+        for start in range(0, self.length, self.chunksize):
+            if self.stop_event.is_set():
+                break
+            stop = min(start + self.chunksize, self.length)
+            chunk_t = t[start:stop]
+            sweep = np.sin(2 * np.pi * k * (np.exp(chunk_t / l) - 1))
+            output = np.column_stack((sweep, sweep))
+            self.output_queue.put(output)
+        print("Stop signal received, waiting for queue to empty...")
+        self.output_queue.join()
         print(f"Sweep generator stoped after {self.length} samples.")
 
 

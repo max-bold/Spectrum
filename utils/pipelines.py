@@ -1,72 +1,414 @@
-from generators import PinkNoiseGenerator, SignalGenerator, LogSweepGenerator
-from analasers import RecordingAnalyzer, Analyzer
+from generators import (
+    PinkNoiseGenerator,
+    SignalGenerator,
+    LogSweepGenerator,
+    LogSweepGeneratorPluggable,
+    PinkNoiseGeneratorPluggable,
+)
+from analasers import AnalyzerPluggable
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.axes import Axes
 import numpy as np
-from threading import Thread
+from threading import Thread, Lock, Event
 from queue import Empty, Full
 from time import sleep, time
+from plugins import Pluggable
+from typing import Callable, Literal
+from numpy.typing import NDArray
+from audio import AudioIO
+from abc import ABC
+from queue import Queue
+from scipy.signal import chirp, butter, sosfilt, sosfilt_zi, welch, periodogram
+import sounddevice as sd
 
-# pass
 
-if __name__ == "__main__":
-    RATE = 96000
-    CHUNKSIZE = 1024 * 4
-    LENGTH = 30  # seconds
-
-    # Create a pink noise generator
-    generator = PinkNoiseGenerator(
-        rate=RATE, chunksize=CHUNKSIZE, length=LENGTH, band=(100, 1000)
-    )
-
-#     # Create a logarithmic sweep generator
-    # generator = LogSweepGenerator(
-    #     rate=RATE, chunksize=CHUNKSIZE, length=LENGTH, band=(100, 1000)
-    # )
-
-#     # Create a recording analyzer
-    analyzer = RecordingAnalyzer(RATE)
-    analyzer.ref = "None"  # "Chanel B" or "None"
-    analyzer.weighting = "A"  # "A", "C" or None
-    analyzer.window_width=1/10
-
-#     # Start the threads
-    generator.start()
-    analyzer.start()
-#     pass
-    def linkgentoanalayzer(gen: SignalGenerator, anal: Analyzer):
-        while gen.is_alive() or not gen.output_queue.empty():
-            chunk = gen.get()  # Get mono chunk from generator
-            chunk = np.column_stack((chunk, chunk))  # Make it stereo
-            try:
-                # Put stereo chunk to analyzer input queue
-                anal.input_queue.put_nowait(chunk)
-            except Full:
-                # print("Analyzer input queue full, dropping chunk.")
-                pass
-            sleep(CHUNKSIZE / RATE)
-        print(f"Linker stoped.")
-
-    linker = Thread(target=linkgentoanalayzer, args=(generator, analyzer))
-    linker.start()
-
+def pltlive(analyzer: AnalyzerPluggable) -> None:
+    if not analyzer.is_alive():
+        analyzer.start()
     plt.ion()
-    fig, ax = plt.subplots()
+    _, ax = plt.subplots()
     ax: Axes = ax
+    ax.grid(True, which="both")
     (line,) = ax.semilogx([], [])
     ax.set_xlim(20, 20e3)
+    ax.set_ylim(-100, 20)
     line: Line2D = line
-    while analyzer.is_alive() or not analyzer.freq_queue.empty():
-        if not generator.is_alive() and generator.output_queue.empty():
-            analyzer.stop()
-        freq_data = analyzer.getresults()
-        # analyzer.levels_queue.get_nowait()
-        # freq_data[:, 1] = freq_data[:, 1] / freq_data[:, 0]  # A-weighting approximation
+    while analyzer.is_alive():
+        freq_data = analyzer.get_fft()
         line.set_data(freq_data)
         ax.relim()
         ax.autoscale_view(scalex=False)
         plt.draw()
-        plt.pause(0.05)
+        plt.pause(0.1)
+    plt.ioff()
+    plt.show()
+
+
+class AnalyserPipeline(Thread):
+    def __init__(self) -> None:
+        # Generator params
+        self.length: float = 10  # in seconds
+        self.band: tuple[float, float] = (20, 20e3)
+        self.gen_mode: Literal["pink noise", "log sweep"] = "log sweep"
+        self.output_queue: Queue[NDArray[np.float64]] = Queue(10)
+        self.gen_running = Event()
+        self.end_padding:float = 2.0 #seconds
+
+        # AudioIO  params
+        self.sample_rate: int = 96000
+        self.chunk_size: int = 4096
+        self.device: tuple[int, int] | None = None
+        self.input_queue: Queue[NDArray[np.float64]] = Queue(10)
+        self.audio_running = Event()
+        self.audio_mode: Literal["normal", "silent"] = "normal"
+        self.stream: sd.Stream | None = None
+
+        # Recorder params
+        self.record = np.empty((0, 2), dtype=np.float64)
+        self.record_lock = Lock()
+        self.recorder_running = Event()
+        self.levels = np.empty((0, 2), dtype=np.float64)
+        self.levels_lock = Lock()
+
+        # Analyzer params
+        self.analyzer_mode: Literal["rta", "recording"] = "recording"
+        self.ref: Literal["none", "channel B", "generator"] = "channel B"
+        self.weighting: None | Literal["pink"] = None
+        self.rta_bucket_size: int = int(0.5 * self.sample_rate)
+        self.freq_length = 1024
+        self.window_width = 1 / 10
+        self.fft_result = np.empty((2, 0), np.float64)
+        self.fft_result_lock = Lock()
+
+        # Pipeline params
+        self.stop_flag = Event()
+        self.run_flag = Event()
+
+        return super().__init__()
+
+    def pink_noise_gen(self):
+        samles_sent = 0
+        n_max = int(self.length * self.sample_rate)
+        band_sos = np.array(
+            butter(4, self.band, "bandpass", False, "sos", self.sample_rate), np.float64
+        )
+        pinking_sos = np.array(
+            [
+                [0.04992203, -0.00539063, 0.0, 1.0, -0.55594526, 0.0],
+                [1.0, -1.81488818, 0.81786161, 1.0, -1.93901074, 0.93928204],
+            ],
+            np.float64,
+        )
+        combined_sos = np.vstack([pinking_sos, band_sos])
+        zi = sosfilt_zi(combined_sos)
+        while samles_sent > n_max:
+            if not self.run_flag.is_set():
+                break
+            n = min(self.chunk_size, n_max - samles_sent)
+            white = np.random.uniform(-1, 1, n)
+            pink, zi = sosfilt(combined_sos, white, -1, zi)
+            pink = np.array(pink, np.float64)
+            chunk = np.column_stack((pink, pink))
+            self.output_queue.put(chunk)
+
+    def log_sweep_gen(self):
+        n = int(self.length * self.sample_rate)
+        ts = np.arange(n)
+        f0 = self.band[0] / self.sample_rate
+        f1 = self.band[1] / self.sample_rate
+        self.gen_running.set()
+        for start in range(0, n, self.chunk_size):
+            if not self.run_flag.is_set():
+                break
+            end = min(start + self.chunk_size, n)
+            chunk = chirp(ts[start:end], f0, n, f1, method="logarithmic") * 0.5
+            chunk = np.column_stack((chunk, chunk))
+            self.output_queue.put(chunk)
+        n = int(self.end_padding*self.sample_rate)
+        # Write silence
+        for start in range(0, n, self.chunk_size):
+            if not self.run_flag.is_set():
+                break
+            nn = min(self.chunk_size, n-start)
+            chunk = np.zeros((nn,2),np.float64)
+            self.output_queue.put(chunk)
+        self.gen_running.clear()
+
+    def init_stream(self):
+        self.stream = sd.Stream(
+            blocksize=self.chunk_size, device=self.device, channels=2
+        )
+        self.sample_rate = self.stream.samplerate
+
+    def audio_io(self):
+        if self.stream is None:
+            raise ValueError(
+                "Stream must be initialised before calling starting audio_io"
+            )
+        else:
+            self.stream.start()
+            self.audio_running.set()
+            while self.gen_running.is_set() or not self.output_queue.empty():
+                if not self.run_flag.is_set():
+                    break
+                try:
+                    output_chunk = self.output_queue.get(False)
+                    if self.audio_mode == "normal":
+                        self.stream.write(output_chunk.astype(np.float32))
+                        input_chunk = self.stream.read(len(output_chunk))[0]
+                    else:
+                        input_chunk = output_chunk
+                    if self.ref == "generator":
+                        input_chunk[:, 1] = output_chunk[:, 0]
+                    self.input_queue.put(input_chunk)
+                except Empty:
+                    sleep(0.1)
+            # if self.run_flag.is_set():
+            #     padding = int(2 * self.sample_rate)
+            #     if self.audio_mode == "normal":
+            #         self.stream.write(np.zeros((padding, 2), np.float32))
+            #         input_chunk = self.stream.read(padding)[0]
+            #     else:
+            #         input_chunk = np.zeros((padding, 2), np.float64)
+            #     if self.ref == "generator":
+            #         input_chunk[:, 1] = np.zeros(padding)
+            #     self.input_queue.put(input_chunk)
+            self.stream.stop()
+            self.audio_running.clear()
+
+    def recorder(self):
+        self.recorder_running.set()
+        while self.audio_running.is_set() or not self.input_queue.empty():
+            if not self.run_flag.is_set():
+                break
+            try:
+                chunk = self.input_queue.get(False)
+                with self.record_lock:
+                    self.record = np.append(self.record, chunk, 0)
+                with self.levels_lock:
+                    self.levels = np.append(
+                        self.levels, np.max(chunk, axis=0).reshape(1, 2), 0
+                    )
+            except:
+                sleep(0.1)
+        self.recorder_running.clear()
+
+    def get_levels(self) -> NDArray[np.float64]:
+        with self.levels_lock:
+            return self.levels
+
+    def log_filter(
+        self, yf: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        n = int(
+            self.freq_length / np.log(20e3 / 20) * np.log(self.band[1] / self.band[0])
+        )
+        # print(points)
+        log_f = np.logspace(
+            np.log10(self.band[0]),
+            np.log10(self.band[1]),
+            num=n,
+            dtype=np.float64,
+        )
+        fft_step = self.sample_rate / len(yf) / 2
+        half_w = 2 ** (self.window_width / 2)
+        window_start = np.astype(log_f / half_w / fft_step, int)
+        window_end = np.astype(log_f * half_w / fft_step, int)
+        log_y = np.zeros_like(log_f)
+        for i, start, end in zip(range(len(log_f)), window_start, window_end):
+            if end <= start:
+                log_y[i] = yf[start]
+            else:
+                log_y[i] = np.median(yf[start:end])
+        return log_f, log_y
+
+    def analyzer(self):
+        while self.recorder_running.is_set():
+        # while True:
+            if not self.run_flag.is_set():
+                break
+            chunk = None
+            with self.record_lock:
+                if self.analyzer_mode == "recording":
+                    if len(self.record) > 0:
+                        chunk = self.record.copy()
+                elif self.analyzer_mode == "rta":
+                    if len(self.record) > self.rta_bucket_size:
+                        chunk = self.record[: self.rta_bucket_size]
+                        self.record = self.record[self.rta_bucket_size :]
+                else:
+                    raise ValueError(f"Unknown mode: {self.analyzer_mode}")
+            if chunk is None:
+                sleep(0.1)
+            else:
+                fs = self.sample_rate
+                nperseg = min(fs/2, len(chunk))
+                x, p = welch(chunk, fs, "hann", nperseg, axis=0)
+                if self.ref == "none":
+                    fft = p[:, 0]
+                else:
+                    fft = p[:, 0] / p[:, 1]
+                if self.weighting == "pink":
+                    fft *= x
+                log_f, log_p = self.log_filter(fft)
+                result = np.vstack((log_f, 10 * np.log10(log_p.clip(1e-20))))
+                with self.fft_result_lock:
+                    self.fft_result = result.copy()
+
+    def get_fft(self) -> NDArray[np.float64]:
+        with self.fft_result_lock:
+            return self.fft_result
+
+    def run(self):
+        while not self.stop_flag.is_set():
+            self.run_flag.wait()
+            if not self.stop_flag.is_set():
+                self.init_stream()
+                if self.gen_mode == "log sweep":
+                    gen = Thread(None, self.log_sweep_gen)
+                elif self.gen_mode == "pink noise":
+                    gen = Thread(None, self.pink_noise_gen)
+                else:
+                    raise ValueError(f"Unknown generator mode: {self.gen_mode}")
+                gen.start()
+                self.gen_running.wait()
+                io = Thread(None, self.audio_io)
+                io.start()
+                self.audio_running.wait()
+                recorder = Thread(None, self.recorder)
+                recorder.start()
+                self.recorder_running.wait()
+                analyzer = Thread(None, self.analyzer)
+                analyzer.start()
+                print("Finished initialization. Waiting workers to stop")
+                gen.join()
+                print("Generator stopped")
+                io.join()
+                print("Audio IO stopped")
+                recorder.join()
+                print("Recorder stopped")
+                analyzer.join()
+                print("Analyzer stopped")
+                print("Clearing run flag")
+            self.run_flag.clear()
+
+    def stop(self):
+        self.stop_flag.set()
+        self.run_flag.set()
+
+
+class LogSweepPipeline:
+    def __init__(
+        self,
+        band: tuple[float, float] = (20, 20e3),
+        length: float = 10,
+    ) -> None:
+        self.io = AudioIO("io")
+        self.generator = LogSweepGeneratorPluggable(
+            self.io.rate, self.io.chunksize, band, length
+        )
+        self.io.source = self.generator
+        self.analyzer = AnalyzerPluggable(self.io.rate, self.io)
+        # self.analyzer.ref = "generator"
+        # self.analyzer.weighting = "pink"
+        self.analyzer.window_width = 1 / 20
+        self.analyzer.band = band
+
+    def start(self):
+        self.generator.start()
+        self.io.start()
+        self.analyzer.start()
+
+    def stop(self):
+        self.generator.stop()
+
+
+class RTA_Pipeline:
+    def __init__(
+        self,
+        band: tuple[float, float] = (20, 20e3),
+        length: float = 10,
+    ) -> None:
+        self.io = AudioIO("io")
+        self.generator = PinkNoiseGeneratorPluggable(
+            self.io.rate, self.io.chunksize, length, band
+        )
+        self.io.source = self.generator
+        self.analyzer = AnalyzerPluggable(self.io.rate, self.io)
+        # self.analyzer.ref = "none"
+        # self.analyzer.weighting = "pink"
+        self.analyzer.mode = "rta"
+        self.analyzer.rta_bucket_size = int(1.0 * self.io.rate)
+        self.analyzer.window_width = 1 / 20
+        self.analyzer.band = band
+
+    def start(self):
+        self.generator.start()
+        self.io.start()
+        self.analyzer.start()
+
+    def stop(self):
+        self.generator.stop()
+
+
+if __name__ == "__main__":
+
+    # # pipeline = LogSweepPipeline(BAND, LENGTH)
+    # pipeline = RTA_Pipeline(BAND, LENGTH)
+    # pipeline.analyzer.window_width = 1 / 3
+    # pipeline.start()
+    # pltlive(pipeline.analyzer)
+    pipe = AnalyserPipeline()
+    pipe.start()
+
+    pipe.gen_mode = "log sweep"
+    pipe.analyzer_mode = "recording"
+    pipe.ref = "generator"
+    # pipe.weighting = "pink"
+    # pipe.audio_mode = "silent"
+
+    pipe.band = (100, 5000)
+    pipe.length = 10
+    # pipe.run_flag.set()
+
+    # pipe.init_stream()
+
+    # gen = Thread(None, pipe.log_sweep_gen)
+    # gen.start()
+    # pipe.gen_running.wait()
+    # io = Thread(None, pipe.audio_io)
+    # io.start()
+    # pipe.audio_running.wait()
+    # signal = np.empty((0, 2), np.float64)
+
+    # # while pipe.gen_running.is_set() or not pipe.output_queue.empty():
+    # #     chunk = pipe.output_queue.get()
+    # #     signal = np.append(signal, chunk, 0)
+
+    # while pipe.audio_running.is_set() or not pipe.input_queue.empty():
+    #     chunk = pipe.input_queue.get()
+    #     signal = np.append(signal, chunk, 0)
+
+    # print(signal.shape)
+    # f, p = periodogram(signal, pipe.sample_rate, axis=0)
+    # p = p[:, 0] * f
+    # plt.semilogx(f, 10 * np.log(p.clip(1e-20)))
+    # plt.grid(True, "both")
+
+    plt.ion()
+    _, ax = plt.subplots()
+    ax: Axes = ax
+    ax.grid(True, which="both")
+    line: Line2D = ax.semilogx([], [])[0]
+    ax.set_xlim(20, 20e3)
+    ax.set_ylim(-100, 20)
+    pipe.run_flag.set()
+    while pipe.run_flag.is_set():
+        freq_data = pipe.get_fft()
+        line.set_data(freq_data)
+        plt.draw()
+        plt.pause(0.1)
+    pipe.stop()
     plt.ioff()
     plt.show()
