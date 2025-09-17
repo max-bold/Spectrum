@@ -53,7 +53,7 @@ class AnalyserPipeline(Thread):
         self.gen_mode: Literal["pink noise", "log sweep"] = "log sweep"
         self.output_queue: Queue[NDArray[np.float64]] = Queue(10)
         self.gen_running = Event()
-        self.end_padding:float = 2.0 #seconds
+        self.end_padding: float = 2.0  # seconds
 
         # AudioIO  params
         self.sample_rate: int = 96000
@@ -125,13 +125,13 @@ class AnalyserPipeline(Thread):
             chunk = chirp(ts[start:end], f0, n, f1, method="logarithmic") * 0.5
             chunk = np.column_stack((chunk, chunk))
             self.output_queue.put(chunk)
-        n = int(self.end_padding*self.sample_rate)
+        n = int(self.end_padding * self.sample_rate)
         # Write silence
         for start in range(0, n, self.chunk_size):
             if not self.run_flag.is_set():
                 break
-            nn = min(self.chunk_size, n-start)
-            chunk = np.zeros((nn,2),np.float64)
+            nn = min(self.chunk_size, n - start)
+            chunk = np.zeros((nn, 2), np.float64)
             self.output_queue.put(chunk)
         self.gen_running.clear()
 
@@ -144,7 +144,7 @@ class AnalyserPipeline(Thread):
     def audio_io(self):
         if self.stream is None:
             raise ValueError(
-                "Stream must be initialised before calling starting audio_io"
+                "Stream must be initialized before calling starting audio_io"
             )
         else:
             self.stream.start()
@@ -161,19 +161,13 @@ class AnalyserPipeline(Thread):
                         input_chunk = output_chunk
                     if self.ref == "generator":
                         input_chunk[:, 1] = output_chunk[:, 0]
-                    self.input_queue.put(input_chunk)
+                    try:
+                        self.input_queue.put_nowait(input_chunk)
+                    except:
+                        print("Input queue full. Dropping a chunk.")
                 except Empty:
+                    print("Output queue empty. Sleeping for 0.1s.")
                     sleep(0.1)
-            # if self.run_flag.is_set():
-            #     padding = int(2 * self.sample_rate)
-            #     if self.audio_mode == "normal":
-            #         self.stream.write(np.zeros((padding, 2), np.float32))
-            #         input_chunk = self.stream.read(padding)[0]
-            #     else:
-            #         input_chunk = np.zeros((padding, 2), np.float64)
-            #     if self.ref == "generator":
-            #         input_chunk[:, 1] = np.zeros(padding)
-            #     self.input_queue.put(input_chunk)
             self.stream.stop()
             self.audio_running.clear()
 
@@ -225,7 +219,7 @@ class AnalyserPipeline(Thread):
 
     def analyzer(self):
         while self.recorder_running.is_set():
-        # while True:
+            # while True:
             if not self.run_flag.is_set():
                 break
             chunk = None
@@ -243,7 +237,7 @@ class AnalyserPipeline(Thread):
                 sleep(0.1)
             else:
                 fs = self.sample_rate
-                nperseg = min(fs/2, len(chunk))
+                nperseg = min(fs / 2, len(chunk))
                 x, p = welch(chunk, fs, "hann", nperseg, axis=0)
                 if self.ref == "none":
                     fft = p[:, 0]
