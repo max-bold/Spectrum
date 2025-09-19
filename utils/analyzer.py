@@ -69,7 +69,8 @@ class AnalyserPipeline(Thread):
         combined_sos = np.vstack([pinking_sos, band_sos])
         zi = sosfilt_zi(combined_sos)
         self.gen_running.set()
-        for i in range(int(self.length*self.sample_rate//self.chunk_size)):
+        n = int(self.length * self.sample_rate // self.chunk_size)
+        for i in range(n):
             if not self.run_flag.is_set():
                 break
             white = np.random.uniform(-1, 1, self.chunk_size)
@@ -78,34 +79,30 @@ class AnalyserPipeline(Thread):
             chunk = np.column_stack((pink, pink))
             self.output_queue.put(chunk)
         for i in range(int((self.end_padding * self.sample_rate) // self.chunk_size)):
+            if not self.run_flag.is_set():
+                break
             zeros = np.zeros((self.chunk_size, 2))
             self.output_queue.put(zeros)
         self.gen_running.clear()
 
     def log_sweep_gen(self):
-        n = int(self.length * self.sample_rate)
+        n = int(self.length * self.sample_rate // self.chunk_size) * self.chunk_size
         ts = np.arange(n)
         f0 = self.band[0] / self.sample_rate
         f1 = self.band[1] / self.sample_rate
         self.gen_running.set()
-        nn = 0
         for start in range(0, n, self.chunk_size):
             if not self.run_flag.is_set():
                 break
-            end = min(start + self.chunk_size, n)
+            end = start + self.chunk_size
             chunk = chirp(ts[start:end], f0, n, f1, method="logarithmic") * 0.5
-            if len(chunk) < self.chunk_size:
-                nn = self.chunk_size - len(chunk)
-                chunk = np.append(chunk, np.zeros(nn))
             chunk = np.column_stack((chunk, chunk))
             self.output_queue.put(chunk)
         # Write silence
-        n = int(self.end_padding * self.sample_rate) - nn
-        for start in range(0, n, self.chunk_size):
+        for i in range(int(self.end_padding * self.sample_rate // self.chunk_size)):
             if not self.run_flag.is_set():
                 break
-            nn = min(self.chunk_size, n - start)
-            chunk = np.zeros((nn, 2), np.float64)
+            chunk = np.zeros((self.chunk_size, 2), np.float64)
             self.output_queue.put(chunk)
         self.gen_running.clear()
 
@@ -133,7 +130,7 @@ class AnalyserPipeline(Thread):
                         input_chunk = self.stream.read(len(output_chunk))[0]
                     else:
                         input_chunk = output_chunk
-                        sleep(self.chunk_size/self.sample_rate)
+                        sleep(self.chunk_size / self.sample_rate)
                     if self.ref == "generator":
                         input_chunk[:, 1] = output_chunk[:, 0]
                     try:
