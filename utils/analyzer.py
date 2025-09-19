@@ -14,6 +14,64 @@ import sounddevice as sd
 
 
 class AnalyserPipeline(Thread):
+    """
+    AnalyserPipeline
+    A threaded audio analysis pipeline for real-time signal generation, playback, recording, and spectral analysis.
+    This class orchestrates the generation of test signals (such as pink noise or logarithmic sweeps), real-time audio I/O, recording, and spectral analysis in a multi-threaded environment. It is designed for use in audio measurement and analysis applications, supporting both real-time analysis (RTA) and post-recording analysis modes.
+    Attributes:
+        Generator params:
+            length (float): Duration of the generated signal in seconds.
+            band (tuple[float, float]): Frequency band for signal generation and analysis (Hz).
+            gen_mode (Literal["pink noise", "log sweep"]): Type of signal to generate.
+            output_queue (Queue[NDArray[np.float64]]): Queue for generated audio chunks.
+            gen_running (Event): Event flag indicating if the generator is running.
+            end_padding (float): Duration of silence appended after signal generation (seconds).
+        AudioIO  params:
+            sample_rate (int): Audio sample rate (Hz).
+            chunk_size (int): Size of audio chunks for processing.
+            device (tuple[int, int] | None): Audio device indices (input, output).
+            input_queue (Queue[NDArray[np.float64]]): Queue for incoming audio chunks.
+            audio_running (Event): Event flag indicating if audio I/O is running.
+            audio_mode (Literal["normal", "silent"]): Audio I/O mode.
+            stream (sd.Stream | None): Sounddevice stream object.
+        Recorder params:
+            record (NDArray[np.float64]): Recorded audio data.
+            record_lock (Lock): Lock for thread-safe access to recorded data.
+            recorder_running (Event): Event flag indicating if the recorder is running.
+            levels (NDArray[np.float64]): Peak levels for each audio chunk.
+            levels_lock (Lock): Lock for thread-safe access to levels.
+        Analyzer params:
+            analyzer_mode (Literal["rta", "recording"]): Analysis mode.
+            ref (Literal["none", "channel B", "generator"]): Reference channel for analysis.
+            weighting (None | Literal["pink"]): Optional spectral weighting.
+            rta_bucket_size (int): Chunk size for real-time analysis.
+            freq_length (int): Number of frequency bins for analysis.
+            window_width (float): Width of the frequency window for log filtering.
+            fft_result (NDArray[np.float64]): Latest FFT analysis result.
+            fft_result_lock (Lock): Lock for thread-safe access to FFT results.
+        Global flags:
+            stop_flag (Event): Event flag to stop the pipeline.
+            run_flag (Event): Event flag to start or pause the pipeline.
+    Methods:
+        pink_noise_gen(): Generates pink noise, applies bandpass filtering, and outputs stereo audio chunks.
+        log_sweep_gen(): Generates and outputs logarithmic frequency sweep (chirp) audio chunks.
+        padding_gen(): Appends silence (zero chunks) to the output queue after signal generation.
+        init_stream(): Initializes the audio stream for I/O.
+        audio_io(): Handles real-time audio playback and recording, feeding data to the input queue.
+        recorder(): Records incoming audio chunks and tracks peak levels.
+        get_levels() -> NDArray[np.float64]: Returns the recorded peak levels.
+        log_filter(yf: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]: Applies logarithmic frequency binning to FFT data.
+        analyzer(): Performs spectral analysis on recorded data and updates FFT results.
+        get_fft() -> NDArray[np.float64]: Returns the latest FFT analysis result.
+        run(): Main pipeline loop, coordinating all worker threads.
+        stop(): Signals the pipeline to stop and releases all waiting threads.
+    Usage:
+        Instantiate the pipeline, configure parameters as needed, and start the thread.
+        Use the `run_flag` to start processing and `stop()` to terminate the pipeline.
+    Thread Safety:
+        Uses threading Events and Locks to coordinate and protect shared resources across multiple worker threads.
+    """
+
     def __init__(self) -> None:
         # Generator params
         self.length: float = 10  # in seconds
@@ -55,7 +113,16 @@ class AnalyserPipeline(Thread):
 
         return super().__init__()
 
-    def pink_noise_gen(self):
+    def pink_noise_gen(self) -> None:
+        """
+        Generates pink noise, applies bandpass filtering, and outputs stereo audio chunks.
+        This generator method creates pink noise, applies a pinking filter and a bandpass filter,
+        and outputs the result in stereo chunks to the output queue. The process continues for the
+        duration specified by `self.length` or until `self.run_flag` is cleared. After generation,
+        it calls `self.padding_gen()` to handle any necessary padding and clears the
+        `self.gen_running` event flag.
+        """
+
         band_sos = np.array(
             butter(4, self.band, "bandpass", False, "sos", self.sample_rate), np.float64
         )
@@ -78,54 +145,95 @@ class AnalyserPipeline(Thread):
             pink = np.array(pink, np.float64)
             chunk = np.column_stack((pink, pink))
             self.output_queue.put(chunk)
+        self.padding_gen()
+        self.gen_running.clear()
+
+    def log_sweep_gen(self) -> None:
+        """
+        Generates and outputs logarithmic frequency sweep (chirp) audio chunks.
+        This generator method creates a series of audio chunks representing a logarithmic frequency sweep
+        between the frequencies specified in `self.band`, sampled at `self.sample_rate`, and divided into
+        chunks of size `self.chunk_size`. Each chunk is generated using a logarithmic chirp signal and is
+        output as a stereo signal (duplicated across two channels). The generated chunks are placed into
+        `self.output_queue` for further processing or playback.
+        The method runs until all chunks are generated or until `self.run_flag` is cleared. After
+        generation, it calls `self.padding_gen()` to handle any necessary padding and clears the
+        `self.gen_running` event flag.
+        Raises:
+            None directly, but may propagate exceptions from queue operations or signal generation.
+        """
+
+        n = int(self.length * self.sample_rate // self.chunk_size)
+        ts = np.arange(n * self.chunk_size)
+        f0 = self.band[0] / self.sample_rate
+        f1 = self.band[1] / self.sample_rate
+        t1 = ts[-1]
+        self.gen_running.set()
+        for i in range(n):
+            if not self.run_flag.is_set():
+                break
+            start = i * self.chunk_size
+            end = (i + 1) * self.chunk_size
+            chunk = chirp(ts[start:end], f0, t1, f1, method="logarithmic") * 0.5
+            chunk = np.column_stack((chunk, chunk))
+            self.output_queue.put(chunk)
+        self.padding_gen()
+        self.gen_running.clear()
+
+    def padding_gen(self) -> None:
+        """
+        Generates and enqueues zero-padding audio chunks to the output queue.
+        This generator method creates a specified number of zero-filled audio chunks,
+        each of shape (chunk_size, 2), corresponding to stereo audio. The number of
+        chunks is determined by the end_padding duration, sample_rate, and chunk_size.
+        The method checks the run_flag event; if it is cleared, the generation stops early.
+        """
         for i in range(int((self.end_padding * self.sample_rate) // self.chunk_size)):
             if not self.run_flag.is_set():
                 break
             zeros = np.zeros((self.chunk_size, 2))
             self.output_queue.put(zeros)
-        self.gen_running.clear()
-
-    def log_sweep_gen(self):
-        n = int(self.length * self.sample_rate // self.chunk_size) * self.chunk_size
-        ts = np.arange(n)
-        f0 = self.band[0] / self.sample_rate
-        f1 = self.band[1] / self.sample_rate
-        self.gen_running.set()
-        for start in range(0, n, self.chunk_size):
-            if not self.run_flag.is_set():
-                break
-            end = start + self.chunk_size
-            chunk = chirp(ts[start:end], f0, n, f1, method="logarithmic") * 0.5
-            chunk = np.column_stack((chunk, chunk))
-            self.output_queue.put(chunk)
-        # Write silence
-        for i in range(int(self.end_padding * self.sample_rate // self.chunk_size)):
-            if not self.run_flag.is_set():
-                break
-            chunk = np.zeros((self.chunk_size, 2), np.float64)
-            self.output_queue.put(chunk)
-        self.gen_running.clear()
 
     def init_stream(self):
-        self.stream = sd.Stream(
-            blocksize=self.chunk_size, device=self.device, channels=2
-        )
-        self.sample_rate = self.stream.samplerate
+        """
+        Initializes the audio stream for input/output using the specified device and chunk size.
+        This method creates a new sounddevice Stream object with the configured chunk size,
+        device, and sets the number of channels to 2 (stereo). It also updates the sample_rate
+        attribute with the stream's sample rate.
+        Raises:
+            sounddevice.PortAudioError: If the stream cannot be initialized with the given parameters.
+        """
+        if self.audio_mode == "normal":
+            self.stream = sd.Stream(
+                blocksize=self.chunk_size, device=self.device, channels=2
+            )
+            self.sample_rate = self.stream.samplerate
 
     def audio_io(self):
-        if self.stream is None:
+        """
+        Handles real-time audio input/output processing using a stream.
+        This method manages the audio stream lifecycle, reading from an output queue and writing audio data to the stream.
+        It also reads input from the stream (if in "normal" audio mode), processes it, and puts it into an input queue for further handling.
+        The method supports two audio modes: "normal" (full duplex) and an alternative mode where output is looped back as input.
+        It synchronizes with threading events to control execution and handles queue underflow/overflow gracefully.
+        Raises:
+            RuntimeError: If the audio stream is not initialized before calling this method.
+        """
+
+        if self.stream is None and self.audio_mode == "normal":
             raise RuntimeError(
                 "Stream must be initialized before calling starting audio_io"
             )
         else:
-            self.stream.start()
+            if self.stream is not None:
+                self.stream.start()
             self.audio_running.set()
             while self.gen_running.is_set() or not self.output_queue.empty():
                 if not self.run_flag.is_set():
                     break
                 try:
                     output_chunk = self.output_queue.get(False)
-                    if self.audio_mode == "normal":
+                    if self.stream is not None:
                         self.stream.write(output_chunk.astype(np.float32))
                         input_chunk = self.stream.read(len(output_chunk))[0]
                     else:
@@ -140,10 +248,21 @@ class AnalyserPipeline(Thread):
                 except Empty:
                     print("Output queue empty. Sleeping for 0.1s.")
                     sleep(0.1)
-            self.stream.stop()
+            if self.stream is not None:
+                self.stream.stop()
             self.audio_running.clear()
 
     def recorder(self):
+        """
+        Continuously records audio data from the input queue and appends it to the internal buffers.
+        This method runs in a loop while audio recording is active or there is data left in the input queue.
+        It checks a run flag to allow for early termination. Audio chunks are retrieved from the input queue,
+        and appended to the `self.record` array under a thread lock to ensure thread safety. The maximum levels
+        of each chunk are also computed and appended to the `self.levels` array under a separate lock.
+        If the input queue is empty, the method waits briefly before retrying.
+        The method sets and clears the `self.recorder_running` event to indicate its running state.
+        """
+
         self.recorder_running.set()
         while self.audio_running.is_set() or not self.input_queue.empty():
             if not self.run_flag.is_set():
@@ -161,12 +280,30 @@ class AnalyserPipeline(Thread):
         self.recorder_running.clear()
 
     def get_levels(self) -> NDArray[np.float64]:
+        """
+        Retrieve the current levels array in a thread-safe manner.
+        Returns:
+            NDArray[np.float64]: The array containing the current levels.
+        """
+
         with self.levels_lock:
             return self.levels
 
     def log_filter(
         self, yf: NDArray[np.float64]
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """
+        Applies a logarithmic filter to the input frequency spectrum.
+        This method computes a logarithmically spaced frequency axis within the specified band,
+        and for each frequency bin, aggregates the corresponding values from the input spectrum
+        using a mean filter within a window centered at each log-spaced frequency.
+        Parameters:
+            yf (NDArray[np.float64]): The input frequency spectrum (e.g., magnitude or power values).
+        Returns:
+            tuple[NDArray[np.float64], NDArray[np.float64]]:
+                - log_f: Logarithmically spaced frequency bins within the specified band.
+                - log_y: Median-filtered spectrum values corresponding to each log-spaced frequency bin.
+        """
         n = int(
             self.freq_length / np.log(20e3 / 20) * np.log(self.band[1] / self.band[0])
         )
@@ -186,10 +323,25 @@ class AnalyserPipeline(Thread):
             if end <= start:
                 log_y[i] = yf[start]
             else:
-                log_y[i] = np.median(yf[start:end])
+                log_y[i] = np.mean(yf[start:end])
         return log_f, log_y
 
     def analyzer(self):
+        """
+        Continuously processes audio data from the recorder in either 'recording' or 'rta' (real-time analysis) mode.
+        The method runs in a loop while the recorder is active and the run flag is set. Depending on the analyzer mode:
+            - In 'recording' mode, it processes the entire recorded data.
+            - In 'rta' mode, it processes data in buckets of size `rta_bucket_size`.
+        For each chunk of data:
+            - Computes the power spectral density using Welch's method.
+            - Applies reference normalization if specified.
+            - Applies pink noise weighting if selected.
+            - Applies logarithmic filtering to the spectrum.
+            - Stores the processed FFT result in a thread-safe manner.
+        Raises:
+            ValueError: If an unknown analyzer mode is specified.
+        """
+
         while self.recorder_running.is_set():
             # while True:
             if not self.run_flag.is_set():
@@ -209,8 +361,8 @@ class AnalyserPipeline(Thread):
                 sleep(0.1)
             else:
                 fs = self.sample_rate
-                nperseg = min(fs / 2, len(chunk))
-                x, p = welch(chunk, fs, "hann", nperseg, axis=0)
+                nperseg = min(fs/2, len(chunk))
+                x, p = welch(chunk, fs, "hamming", nperseg, axis=0)
                 if self.ref == "none":
                     fft = p[:, 0]
                 else:
@@ -223,10 +375,28 @@ class AnalyserPipeline(Thread):
                     self.fft_result = result.copy()
 
     def get_fft(self) -> NDArray[np.float64]:
+        """
+        Returns the current FFT (Fast Fourier Transform) result.
+        Returns:
+            NDArray[np.float64]: The FFT result as a NumPy array of float64 values.
+        """
+
         with self.fft_result_lock:
             return self.fft_result
 
     def run(self):
+        """
+        Runs the main processing loop for the analyzer.
+        This method manages the lifecycle of several worker threads responsible for signal generation,
+        audio input/output, recording, and analysis. It waits for the `run_flag` event to be set before
+        initializing and starting the threads according to the selected generator mode (`log sweep` or
+        `pink noise`). Each worker thread is started in sequence, and the method waits for each to signal
+        readiness before proceeding. After all threads are running, it waits for them to complete before
+        clearing the `run_flag` and potentially repeating the process unless a stop is requested.
+        Raises:
+            ValueError: If an unknown generator mode is specified.
+        """
+
         while not self.stop_flag.is_set():
             self.run_flag.wait()
             if not self.stop_flag.is_set():
@@ -260,26 +430,38 @@ class AnalyserPipeline(Thread):
             self.run_flag.clear()
 
     def stop(self):
+        """
+        Stops the analyzer by setting the stop flag and ensuring the run flag is set.
+        This method signals the analyzer to stop its operation by setting the `stop_flag`.
+        It also triggers the `run_flag`, if pipeline is paused.
+        """
         self.stop_flag.set()
-        self.run_flag.set()
+        if self.run_flag.is_set():
+            self.run_flag.clear()
+        else:
+            self.run_flag.set()
 
 
 if __name__ == "__main__":
 
-    # Example usage:
+    # Example usage of AnalyserPipeline with real-time plotting
 
+    # Create and start the analyzer pipeline thread
     pipe = AnalyserPipeline()
     pipe.start()
 
-    pipe.gen_mode = "pink noise"
-    pipe.analyzer_mode = "recording"
-    pipe.ref = "none"
-    pipe.weighting = "pink"
-    pipe.audio_mode = "silent"
+    # Configure pipeline parameters
+    pipe.gen_mode = "log sweep"           # Use pink noise as the test signal
+    pipe.analyzer_mode = "recording"       # Analyze the full recording after playback
+    pipe.ref = "none"                      # No reference channel normalization
+    pipe.weighting = "pink"                # Apply pink noise spectral weighting
+    pipe.audio_mode = "silent"             # Do not use actual audio hardware
 
-    pipe.band = (100, 5000)
-    pipe.length = 10
+    pipe.band = (100, 5000)                # Frequency band for generation/analysis
+    pipe.length = 30
+    pipe.window_width = 1/10                       # Duration of the test signal in seconds
 
+    # Set up interactive plotting
     plt.ion()
     _, ax = plt.subplots()
     ax: Axes = ax
@@ -287,12 +469,17 @@ if __name__ == "__main__":
     line: Line2D = ax.semilogx([], [])[0]
     ax.set_xlim(20, 20e3)
     ax.set_ylim(-100, 20)
+
+    # Start the pipeline processing
     pipe.run_flag.set()
     while pipe.run_flag.is_set():
+        # Fetch the latest FFT result and update the plot
         freq_data = pipe.get_fft()
         line.set_data(freq_data)
         plt.draw()
         plt.pause(0.1)
+
+    # Stop the pipeline and finalize the plot
     pipe.stop()
     plt.ioff()
     plt.show()
