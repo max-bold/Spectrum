@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 from abc import ABC
 from queue import Queue
 from scipy.signal import chirp, butter, sosfilt, sosfilt_zi, welch, periodogram
+from scipy.signal.windows import blackman
 import sounddevice as sd
 
 
@@ -94,8 +95,10 @@ class AnalyserPipeline(Thread):
         self.record = np.empty((0, 2), dtype=np.float64)
         self.record_lock = Lock()
         self.recorder_running = Event()
-        self.levels = np.empty((0, 2), dtype=np.float64)
+        self.levels = np.empty((2, 0), dtype=np.float64)
+        self.times = np.empty(0, np.float64)
         self.levels_lock = Lock()
+        self.record_upd = Event()
 
         # Analyzer params
         self.analyzer_mode: Literal["rta", "recording"] = "recording"
@@ -106,6 +109,7 @@ class AnalyserPipeline(Thread):
         self.window_width = 1 / 10
         self.fft_result = np.empty((2, 0), np.float64)
         self.fft_result_lock = Lock()
+        self.final_fft_ready = Event()
 
         # Pipeline params
         self.stop_flag = Event()
@@ -137,15 +141,17 @@ class AnalyserPipeline(Thread):
         zi = sosfilt_zi(combined_sos)
         self.gen_running.set()
         n = int(self.length * self.sample_rate // self.chunk_size)
+        att = 2**-10
         for i in range(n):
             if not self.run_flag.is_set():
                 break
             white = np.random.uniform(-1, 1, self.chunk_size)
             pink, zi = sosfilt(combined_sos, white, -1, zi)
             pink = np.array(pink, np.float64)
-            chunk = np.column_stack((pink, pink))
+            att = min(1, att*2)
+            chunk = np.column_stack((pink, pink))*att
             self.output_queue.put(chunk)
-        self.padding_gen()
+        self.padding_gen(self.end_padding)
         self.gen_running.clear()
 
     def log_sweep_gen(self) -> None:
@@ -177,10 +183,10 @@ class AnalyserPipeline(Thread):
             chunk = chirp(ts[start:end], f0, t1, f1, method="logarithmic") * 0.5
             chunk = np.column_stack((chunk, chunk))
             self.output_queue.put(chunk)
-        self.padding_gen()
+        self.padding_gen(self.end_padding)
         self.gen_running.clear()
 
-    def padding_gen(self) -> None:
+    def padding_gen(self, length:float) -> None:
         """
         Generates and enqueues zero-padding audio chunks to the output queue.
         This generator method creates a specified number of zero-filled audio chunks,
@@ -188,7 +194,7 @@ class AnalyserPipeline(Thread):
         chunks is determined by the end_padding duration, sample_rate, and chunk_size.
         The method checks the run_flag event; if it is cleared, the generation stops early.
         """
-        for i in range(int((self.end_padding * self.sample_rate) // self.chunk_size)):
+        for i in range(int((length * self.sample_rate) // self.chunk_size)):
             if not self.run_flag.is_set():
                 break
             zeros = np.zeros((self.chunk_size, 2))
@@ -264,22 +270,24 @@ class AnalyserPipeline(Thread):
         """
 
         self.recorder_running.set()
+        tot_samples = 0
         while self.audio_running.is_set() or not self.input_queue.empty():
             if not self.run_flag.is_set():
                 break
             try:
                 chunk = self.input_queue.get(False)
+                tot_samples += len(chunk)
                 with self.record_lock:
                     self.record = np.append(self.record, chunk, 0)
+                    self.record_upd.set()
                 with self.levels_lock:
-                    self.levels = np.append(
-                        self.levels, np.max(chunk, axis=0).reshape(1, 2), 0
-                    )
-            except:
+                    self.levels = np.append(self.levels, np.reshape(np.max(np.abs(chunk), axis=0),(2,1)),1)
+                    self.times = np.append(self.times, tot_samples / self.sample_rate)
+            except Empty:
                 sleep(0.1)
         self.recorder_running.clear()
 
-    def get_levels(self) -> NDArray[np.float64]:
+    def get_levels(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """
         Retrieve the current levels array in a thread-safe manner.
         Returns:
@@ -287,7 +295,7 @@ class AnalyserPipeline(Thread):
         """
 
         with self.levels_lock:
-            return self.levels
+            return self.times, self.levels
 
     def log_filter(
         self, yf: NDArray[np.float64]
@@ -323,7 +331,10 @@ class AnalyserPipeline(Thread):
             if end <= start:
                 log_y[i] = yf[start]
             else:
-                log_y[i] = np.mean(yf[start:end])
+                ys = yf[start:end]
+                # w = blackman(end - start)
+                log_y[i] = np.mean(ys)
+                # log_y[i] = np.average(ys, None, w)
         return log_f, log_y
 
     def analyzer(self):
@@ -342,7 +353,7 @@ class AnalyserPipeline(Thread):
             ValueError: If an unknown analyzer mode is specified.
         """
 
-        while self.recorder_running.is_set():
+        while self.recorder_running.is_set() or self.record_upd.is_set():
             # while True:
             if not self.run_flag.is_set():
                 break
@@ -357,12 +368,15 @@ class AnalyserPipeline(Thread):
                         self.record = self.record[self.rta_bucket_size :]
                 else:
                     raise ValueError(f"Unknown mode: {self.analyzer_mode}")
+                self.record_upd.clear()
             if chunk is None:
                 sleep(0.1)
             else:
                 fs = self.sample_rate
                 nperseg = min(fs/2, len(chunk))
-                x, p = welch(chunk, fs, "hamming", nperseg, axis=0)
+                x, p = welch(chunk, fs, "hann", nperseg, axis=0)
+                # x, p = periodogram(chunk, fs, axis=0)
+                # print(x[1])
                 if self.ref == "none":
                     fft = p[:, 0]
                 else:
@@ -373,6 +387,23 @@ class AnalyserPipeline(Thread):
                 result = np.vstack((log_f, 10 * np.log10(log_p.clip(1e-20))))
                 with self.fft_result_lock:
                     self.fft_result = result.copy()
+        if self.analyzer_mode == "recording":
+            with self.record_lock:
+                rec = self.record.copy()
+            x, p = periodogram(rec, self.sample_rate, axis=0)
+            if self.ref == "none":
+                fft = p[:, 0]
+            else:
+                fft = p[:, 0] / p[:, 1]
+            if self.weighting == "pink":
+                fft *= x
+            log_f, log_p = self.log_filter(fft)
+            result = np.vstack((log_f, 10 * np.log10(log_p.clip(1e-20))))
+            with self.fft_result_lock:
+                self.fft_result = result.copy()
+            self.final_fft_ready.set()
+            
+            
 
     def get_fft(self) -> NDArray[np.float64]:
         """
@@ -382,7 +413,7 @@ class AnalyserPipeline(Thread):
         """
 
         with self.fft_result_lock:
-            return self.fft_result
+            return self.fft_result.copy()
 
     def run(self):
         """
@@ -451,24 +482,31 @@ if __name__ == "__main__":
     pipe.start()
 
     # Configure pipeline parameters
-    pipe.gen_mode = "log sweep"           # Use pink noise as the test signal
-    pipe.analyzer_mode = "recording"       # Analyze the full recording after playback
-    pipe.ref = "none"                      # No reference channel normalization
-    pipe.weighting = "pink"                # Apply pink noise spectral weighting
-    pipe.audio_mode = "silent"             # Do not use actual audio hardware
+    pipe.gen_mode = "pink noise"  # Use pink noise as the test signal
+    pipe.analyzer_mode = "recording"  # Analyze the full recording after playback
+    pipe.ref = "generator"  # No reference channel normalization
+    # pipe.weighting = "pink"  # Apply pink noise spectral weighting
+    # pipe.audio_mode = "silent"  # Do not use actual audio hardware
+    pipe.device = (20, 16)
+    pipe.rta_bucket_size=int(pipe.sample_rate/4)
 
-    pipe.band = (100, 5000)                # Frequency band for generation/analysis
-    pipe.length = 30
-    pipe.window_width = 1/10                       # Duration of the test signal in seconds
+    pipe.band = (20, 20e3)  # Frequency band for generation/analysis
+    pipe.length = 20
+    pipe.window_width = 1 / 3  # Duration of the test signal in seconds
 
     # Set up interactive plotting
     plt.ion()
-    _, ax = plt.subplots()
-    ax: Axes = ax
-    ax.grid(True, which="both")
-    line: Line2D = ax.semilogx([], [])[0]
-    ax.set_xlim(20, 20e3)
-    ax.set_ylim(-100, 20)
+    _, axs = plt.subplots(2)
+    axs: list[Axes]
+    axs[0].grid(True, which="both")
+    axs[1].grid(True, which="both")
+    line: Line2D = axs[0].semilogx([], [])[0]
+    axs[0].set_xlim(20, 20e3)
+    axs[0].set_ylim(-100, 20)
+    lineL = axs[1].plot([], [])[0]
+    lineR = axs[1].plot([], [])[0]
+    axs[1].set_xlim(-1, pipe.length+5)
+    axs[1].set_ylim(0, 1)
 
     # Start the pipeline processing
     pipe.run_flag.set()
@@ -476,8 +514,15 @@ if __name__ == "__main__":
         # Fetch the latest FFT result and update the plot
         freq_data = pipe.get_fft()
         line.set_data(freq_data)
+        ts, levels = pipe.get_levels()
+        lineL.set_data(ts, (levels[0].clip(1e-20)))
+        lineR.set_data(ts, (levels[1].clip(1e-20)))
         plt.draw()
         plt.pause(0.1)
+    if pipe.analyzer_mode == "recording":
+        pipe.final_fft_ready.wait()
+        freq_data = pipe.get_fft()
+        line.set_data(freq_data)
 
     # Stop the pipeline and finalize the plot
     pipe.stop()
