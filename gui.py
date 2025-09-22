@@ -3,7 +3,7 @@ import cbs
 
 dpg.create_context()
 
-with dpg.window(tag="Primary Window"):
+with dpg.window(tag="Primary Window") as main_window:
     with dpg.menu_bar():
         with dpg.menu(label="File"):
             dpg.add_menu_item(label="Open project")
@@ -28,16 +28,20 @@ with dpg.window(tag="Primary Window"):
             with dpg.plot(height=-1, label="Time plot"):
                 pass
         with dpg.group():
-            dpg.add_button(label="RUN", width=-1, height=50, callback=cbs.run_btn, tag="run btn")
+            dpg.add_button(
+                label="RUN", width=-1, height=50, callback=cbs.run_btn, tag="run btn"
+            )
             dpg.add_separator(label="generator")
             dpg.add_combo(
-                ["linear sweep", "log sweep", "pink noise"],
+                ["log sweep", "pink noise"],
                 width=-1,
                 default_value="log sweep",
+                callback=cbs.set_genmode,
             )
-            # dpg.add_text("band, Hz")
-            dpg.add_checkbox(label="band, Hz", default_value=True)
-            dpg.add_input_intx(default_value=[20, 20000], size=2, width=-1)
+            dpg.add_text("band, Hz")
+            dpg.add_input_intx(
+                default_value=[20, 20000], size=2, width=-1, callback=cbs.set_band
+            )
             dpg.add_text("length, s")
             dpg.add_input_float(
                 width=-1,
@@ -46,18 +50,33 @@ with dpg.window(tag="Primary Window"):
                 default_value=30.0,
                 format="%.1f",
                 tag="length input",
+                callback=cbs.set_length,
             )
+            with dpg.group():
+                dpg.add_separator(label="audio io")
+                inputs_combo = dpg.add_combo(label="input", width=-50)
+                outputs_combo = dpg.add_combo(label="output", width=-50)
+                with dpg.group(horizontal=True):
+                    with dpg.group():
+                        left_level = dpg.add_progress_bar(height=7, width=-30)
+                        right_level = dpg.add_progress_bar(height=7, width=-30)
+                    mon_cb = dpg.add_checkbox(callback=cbs.set_input_meter)
+
             dpg.add_separator(label="analyzer")
             dpg.add_text("input level monitor")
             with dpg.group(horizontal=True):
-                dpg.add_checkbox(tag="ilm checkbox", callback=cbs.ilm_act, user_data=cbs.measurethread)
+                dpg.add_checkbox(
+                    tag="ilm checkbox",
+                    callback=cbs.ilm_act,
+                    user_data=cbs.measurethread,
+                )
                 dpg.add_progress_bar(width=-1, default_value=0.3, tag="ilm pbar")
             dpg.add_text("smoothing, octaves")
             with dpg.group(horizontal=True):
                 dpg.add_text("1:")
                 dpg.add_slider_int(min_value=1, max_value=10, width=-1, default_value=5)
             dpg.add_separator(label="records")
-            dpg.add_child_window(tag= "rec group",label="records")
+            dpg.add_child_window(tag="rec group", label="records")
             # dpg.add_text("new name:")
             # dpg.add_input_text(width=-1)
             # dpg.add_listbox(["rec1", "rec2", "rec3"], width=-1, num_items=20)
@@ -105,9 +124,15 @@ with dpg.window(modal=True, show=False, tag="rec progress", no_resize=True):
     dpg.add_text("Measuring !!!")
     dpg.add_progress_bar(width=300, height=50, tag="Measure prog bar")
 
-dpg.create_viewport(title="BM Spectrum", width=800, height=600)
+dpg.create_viewport(title="BM Spectrum", width=1024, height=768)
 dpg.setup_dearpygui()
 dpg.show_viewport()
 dpg.set_primary_window("Primary Window", True)
-dpg.start_dearpygui()
+
+while dpg.is_dearpygui_running():
+    cbs.upd_io(inputs_combo, outputs_combo)
+    if dpg.get_value(mon_cb):
+        cbs.upd_level_monitor((left_level, right_level))
+    dpg.render_dearpygui_frame()
+    
 dpg.destroy_context()

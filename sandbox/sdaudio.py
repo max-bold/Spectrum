@@ -7,6 +7,7 @@ import numpy as np
 # print(f"default blocksize: {stream.blocksize}")
 
 print(sd.query_devices())
+print(sd.query_hostapis())
 
 # stream.start()
 # print(stream.write_available)
