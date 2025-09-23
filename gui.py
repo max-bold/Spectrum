@@ -3,6 +3,32 @@ import cbs
 
 dpg.create_context()
 
+with dpg.theme(tag = "green_theme"):
+    with dpg.theme_component(dpg.mvButton):
+        dpg.add_theme_color(
+            dpg.mvThemeCol_Button, (0, 200, 0, 255), category=dpg.mvThemeCat_Core
+        )
+        dpg.add_theme_color(
+            dpg.mvThemeCol_ButtonHovered, (0, 220, 0, 255), category=dpg.mvThemeCat_Core
+        )
+        dpg.add_theme_color(
+            dpg.mvThemeCol_ButtonActive, (0, 160, 0, 255), category=dpg.mvThemeCat_Core
+        )
+
+# создаём красную тему
+with dpg.theme(tag="red_theme"):
+    with dpg.theme_component(dpg.mvButton):
+        dpg.add_theme_color(
+            dpg.mvThemeCol_Button, (200, 0, 0, 255), category=dpg.mvThemeCat_Core
+        )
+        dpg.add_theme_color(
+            dpg.mvThemeCol_ButtonHovered, (220, 0, 0, 255), category=dpg.mvThemeCat_Core
+        )
+        dpg.add_theme_color(
+            dpg.mvThemeCol_ButtonActive, (160, 0, 0, 255), category=dpg.mvThemeCat_Core
+        )
+
+
 with dpg.window(tag="Primary Window") as main_window:
     with dpg.menu_bar():
         with dpg.menu(label="File"):
@@ -14,7 +40,7 @@ with dpg.window(tag="Primary Window") as main_window:
             dpg.add_separator()
             dpg.add_menu_item(label="Exit")
         with dpg.menu(label="Settings"):
-            dpg.add_menu_item(label="Audio IO", callback=cbs.audioset_open)
+            # dpg.add_menu_item(label="Audio IO", callback=cbs.audioset_open)
             dpg.add_menu_item(label="Analyzer", callback=lambda: dpg.show_item("AnSet"))
     with dpg.group(horizontal=True):
         with dpg.group(width=-200):
@@ -28,9 +54,15 @@ with dpg.window(tag="Primary Window") as main_window:
             with dpg.plot(height=-1, label="Time plot"):
                 pass
         with dpg.group():
-            dpg.add_button(
-                label="RUN", width=-1, height=50, callback=cbs.run_btn, tag="run btn"
+            run_btn = dpg.add_button(
+                label="OFF",
+                width=-1,
+                height=50,
+                callback=cbs.run_btn,
+                tag="run btn",
+                # user_data=(red_theme, green_theme),
             )
+            dpg.bind_item_theme(run_btn, "green_theme")
             dpg.add_separator(label="generator")
             dpg.add_combo(
                 ["log sweep", "pink noise"],
@@ -54,23 +86,22 @@ with dpg.window(tag="Primary Window") as main_window:
             )
             with dpg.group():
                 dpg.add_separator(label="audio io")
-                inputs_combo = dpg.add_combo(label="input", width=-50)
-                outputs_combo = dpg.add_combo(label="output", width=-50)
+                dpg.add_text("input")
+                inputs_combo = dpg.add_combo(
+                    default_value="default", width=-1, callback=cbs.set_input
+                )
                 with dpg.group(horizontal=True):
                     with dpg.group():
                         left_level = dpg.add_progress_bar(height=7, width=-30)
                         right_level = dpg.add_progress_bar(height=7, width=-30)
                     mon_cb = dpg.add_checkbox(callback=cbs.set_input_meter)
+                dpg.add_text("output")
+                outputs_combo = dpg.add_combo(
+                    default_value="default", width=-1, callback=cbs.set_output
+                )
 
             dpg.add_separator(label="analyzer")
-            dpg.add_text("input level monitor")
-            with dpg.group(horizontal=True):
-                dpg.add_checkbox(
-                    tag="ilm checkbox",
-                    callback=cbs.ilm_act,
-                    user_data=cbs.measurethread,
-                )
-                dpg.add_progress_bar(width=-1, default_value=0.3, tag="ilm pbar")
+
             dpg.add_text("smoothing, octaves")
             with dpg.group(horizontal=True):
                 dpg.add_text("1:")
@@ -124,6 +155,7 @@ with dpg.window(modal=True, show=False, tag="rec progress", no_resize=True):
     dpg.add_text("Measuring !!!")
     dpg.add_progress_bar(width=300, height=50, tag="Measure prog bar")
 
+
 dpg.create_viewport(title="BM Spectrum", width=1024, height=768)
 dpg.setup_dearpygui()
 dpg.show_viewport()
@@ -134,5 +166,6 @@ while dpg.is_dearpygui_running():
     if dpg.get_value(mon_cb):
         cbs.upd_level_monitor((left_level, right_level))
     dpg.render_dearpygui_frame()
-    
+
 dpg.destroy_context()
+#

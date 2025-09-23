@@ -85,7 +85,7 @@ class AnalyserPipeline(Thread):
         # AudioIO  params
         self.sample_rate: int = 96000
         self.chunk_size: int = 4096
-        self.device: tuple[int, int] | None = None
+        self.device = self.get_default_io()
         self.input_queue: Queue[NDArray[np.float64]] = Queue(10)
         self.audio_running = Event()
         self.audio_mode: Literal["normal", "silent"] = "normal"
@@ -214,6 +214,15 @@ class AnalyserPipeline(Thread):
                 blocksize=self.chunk_size, device=self.device, channels=2
             )
             self.sample_rate = self.stream.samplerate
+    
+    @staticmethod
+    def get_default_io() -> tuple[int, int]:
+        dev = []
+        for k in ["input", "output"]:
+            info = sd.query_devices(kind=k)
+            if isinstance(info, dict) and info["index"]:
+                dev.append(info["index"])
+        return tuple(dev)
 
     def audio_io(self):
         """
