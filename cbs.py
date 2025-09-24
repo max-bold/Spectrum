@@ -7,98 +7,30 @@ from utils.analyzer import AnalyserPipeline
 from typing import Literal
 from sounddevice import query_devices
 from utils.audio import io_list_updater, InputMeter
-# from utils.themes import red_theme, green_theme
 
 pipe = AnalyserPipeline()
+pipe.start()
 
 run_state = False
 
+meter = InputMeter()
+meter.start()
+
+io_upd = io_list_updater()
+io_upd.start()
+io_upd.enable.set()
 
 
-
-
-def run_btn(sender, _,userdata):
-    print(userdata)
-    global run_state
-    run_state = not run_state
-    if run_state:
-        dpg.set_item_label(sender, "ON")
-        dpg.bind_item_theme(sender, "red_theme")
+def run_btn():
+    if not pipe.run_flag.is_set():
+        io_upd.enable.clear()
+        io_upd.paused.wait()
+        meter.enable.clear()
+        dpg.set_value("meter_cb", False)
+        pipe.run_flag.set()
     else:
-        dpg.set_item_label(sender, "OFF")
-        dpg.bind_item_theme(sender, "green_theme")
-
-    # dpg.show_item("rec progress")
-    # wh = dpg.get_item_height("Primary Window")
-    # ww = dpg.get_item_width("Primary Window")
-    # h = dpg.get_item_height("rec progress")
-    # w = dpg.get_item_width("rec progress")
-    # dpg.set_item_pos("rec progress", [(ww - w) / 2, (wh - h) / 2])
-
-    # def upd_pb():
-    #     dpg.disable_item("run btn")
-    #     st = time()
-    #     l = dpg.get_value("length input")
-    #     while time() - st < l:
-    #         dpg.set_value("Measure prog bar", (time() - st) / l)
-    #         sleep(0.1)
-    #     dpg.hide_item("rec progress")
-    #     dpg.enable_item("run btn")
-    #     with dpg.group(horizontal=True, parent="rec group"):
-    #         dpg.add_checkbox(default_value=True)
-    #         dpg.add_input_text(default_value="new record", width=-1)
-
-    # t = Thread(target=upd_pb)
-    # t.start()
-
-
-# def audioset_open():
-#     dpg.configure_item("input combo", items=list(listinputs().keys()))
-#     dpg.configure_item("output combo", items=list(listoutputs().keys()))
-#     dpg.show_item("AIO")
-
-
-# def measureinp():
-#     selinput = dpg.get_value("input combo")
-#     inputs = listinputs()
-#     if selinput in inputs:
-#         input = listinputs[selinput]
-#     else:
-#         input = None
-#     m = measure_input(input)
-#     while True:
-#         dpg.set_value("ilm pbar", next(m))
-
-
-# class Measurethread(Thread):
-#     def __init__(self):
-#         self.runflag = True
-#         super().__init__()
-
-#     def run(self):
-#         selinput = dpg.get_value("input combo")
-#         inputs = listinputs()
-#         if selinput in inputs:
-#             input = listinputs()[selinput]
-#         else:
-#             input = None
-#         m = measure_input(input)
-#         while self.runflag:
-#             dpg.set_value("ilm pbar", next(m))
-#         # m.send(True)
-
-#     def stop(self):
-#         self.runflag = False
-
-
-# measurethread = Measurethread()
-
-
-# def ilm_act(sender, cheked, thread: Measurethread):
-#     if dpg.get_value("ilm checkbox"):
-#         thread.start()
-#     else:
-#         thread.stop()
+        pipe.run_flag.clear()
+        io_upd.enable.set()
 
 
 def set_genmode(source: int, mode: Literal["pink noise", "log sweep"]):
@@ -110,15 +42,7 @@ def set_band(source, band: list[int]) -> None:
 
 
 def set_length(source: int, length: float) -> None:
-    print(length, type(length))
-
-
-meter = InputMeter()
-meter.start()
-
-io_upd = io_list_updater()
-io_upd.start()
-io_upd.enable.set()
+    pipe.length = length
 
 
 def set_input_meter(source: int, state: bool) -> None:
@@ -146,10 +70,62 @@ def set_input(s, name: str):
     idx = io_upd.get_device_indx(name)
     pipe.device = (idx, pipe.device[1])
     meter.device = idx
-    # print(pipe.device)
 
 
-def set_output(s, name: str):
+def set_output(s, name: str) -> None:
     idx = io_upd.get_device_indx(name)
     pipe.device = (pipe.device[0], idx)
-    # print(pipe.device)
+
+
+def set_analyzer_mode(s, mode: Literal["rta", "recording"]) -> None:
+    pipe.analyzer_mode = mode
+
+
+def set_analyzer_ref(s, ref: Literal["none", "channel B", "generator"]) -> None:
+    pipe.ref = ref
+
+
+def set_analyzer_weighting(s, weighting: Literal["none", "pink"]) -> None:
+    pipe.weighting = weighting
+
+
+def set_bucket_size(s, size: int) -> None:
+    pipe.rta_bucket_size = size
+
+
+def set_window_width(s, width: float) -> None:
+    pipe.window_width = width
+
+
+def set_freq_length(s, length: int) -> None:
+    pipe.freq_length = length
+
+
+current_rec = 0
+
+
+def record_used_click(sender, state, rows) -> None:
+    global current_rec
+    if state == False:
+        dpg.set_value(sender, True)
+    else:
+        for i, row in enumerate(rows):
+            if not row[0] == sender:
+                dpg.set_value(row[0], False)
+            else:
+                current_rec = i
+
+
+def record_visible_clicked(sender, state, data) -> None:
+    for row, line in zip(*data):
+        if sender == row[1]:
+            if state:
+                dpg.show_item(line)
+            else:
+                dpg.hide_item(line)
+
+
+def record_set_name(sender, name, data) -> None:
+    for row, line in zip(*data):
+        if sender == row[2]:
+            dpg.set_item_label(line, name)

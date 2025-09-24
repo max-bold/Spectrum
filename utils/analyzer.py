@@ -103,8 +103,8 @@ class AnalyserPipeline(Thread):
         # Analyzer params
         self.analyzer_mode: Literal["rta", "recording"] = "recording"
         self.ref: Literal["none", "channel B", "generator"] = "channel B"
-        self.weighting: None | Literal["pink"] = None
-        self.rta_bucket_size: int = int(0.5 * self.sample_rate)
+        self.weighting: Literal["none","pink"] = "none"
+        self.rta_bucket_size: int = 2**15
         self.freq_length = 1024
         self.window_width = 1 / 10
         self.fft_result = np.empty((2, 0), np.float64)
@@ -115,7 +115,7 @@ class AnalyserPipeline(Thread):
         self.stop_flag = Event()
         self.run_flag = Event()
 
-        return super().__init__()
+        return super().__init__(daemon=True)
 
     def pink_noise_gen(self) -> None:
         """
@@ -441,21 +441,24 @@ class AnalyserPipeline(Thread):
             self.run_flag.wait()
             if not self.stop_flag.is_set():
                 self.init_stream()
+                with self.levels_lock:
+                    self.levels = np.empty((2, 0), dtype=np.float64)
+                    self.times = np.empty(0, np.float64)
                 if self.gen_mode == "log sweep":
-                    gen = Thread(None, self.log_sweep_gen)
+                    gen = Thread(None, self.log_sweep_gen, daemon=True)
                 elif self.gen_mode == "pink noise":
-                    gen = Thread(None, self.pink_noise_gen)
+                    gen = Thread(None, self.pink_noise_gen, daemon=True)
                 else:
                     raise ValueError(f"Unknown generator mode: {self.gen_mode}")
                 gen.start()
                 self.gen_running.wait()
-                io = Thread(None, self.audio_io)
+                io = Thread(None, self.audio_io,daemon=True)
                 io.start()
                 self.audio_running.wait()
-                recorder = Thread(None, self.recorder)
+                recorder = Thread(None, self.recorder, daemon=True)
                 recorder.start()
                 self.recorder_running.wait()
-                analyzer = Thread(None, self.analyzer)
+                analyzer = Thread(None, self.analyzer, daemon=True)
                 analyzer.start()
                 print("Finished initialization. Waiting workers to stop")
                 gen.join()
