@@ -53,7 +53,7 @@ with dpg.window(tag="Primary Window") as main_window:
             dpg.add_menu_item(label="Analyzer", callback=lambda: dpg.show_item("AnSet"))
     with dpg.group(horizontal=True):
         with dpg.group(width=-200):
-            with dpg.plot(height=-200, label="FFT"):
+            with dpg.plot(height=-200, label="FFT") as fft_plot:
                 dpg.add_plot_legend()
                 xaxis = dpg.add_plot_axis(
                     dpg.mvXAxis, label="Hz", scale=dpg.mvPlotScale_Log10
@@ -69,7 +69,7 @@ with dpg.window(tag="Primary Window") as main_window:
             with dpg.plot(height=-1, label="Time plot"):
                 levels_xaxis = dpg.add_plot_axis(dpg.mvXAxis, label="s")
                 with dpg.plot_axis(dpg.mvYAxis) as levels_yaxis:
-                    dpg.set_axis_limits(levels_yaxis,0,1)
+                    dpg.set_axis_limits(levels_yaxis, 0, 1)
                     levels_line_l = dpg.add_line_series([], [])
                     levels_line_r = dpg.add_line_series([], [])
         with dpg.group():
@@ -156,7 +156,8 @@ with dpg.window(tag="Primary Window") as main_window:
                         default_value="none",
                         callback=cbs.set_analyzer_weighting,
                     )
-                    dpg.add_separator(label="filtering")
+            with dpg.collapsing_header(label="filtering"):
+                with dpg.group(width=-1):
                     dpg.add_text("window width, octaves")
                     dpg.add_input_float(
                         default_value=default_pipeline.window_width,
@@ -279,22 +280,23 @@ while dpg.is_dearpygui_running():
     elif t1_enbl:
         t1_enbl = False
 
-    if cbs.pipe.run_flag.is_set():
+    if cbs.pipe.run_flag.is_set() or cbs.pipe.final_fft_ready.is_set():
         data = cbs.pipe.get_fft()
         if data.shape[1]:
             dpg.set_value(lines[cbs.current_rec], list(data))
         ts, levels = cbs.pipe.get_levels()
-        dpg.set_value(levels_line_l, [list(ts),list(levels[0])])
-        dpg.set_value(levels_line_r, [list(ts),list(levels[1])])
+        dpg.set_value(levels_line_l, [list(ts), list(levels[0])])
+        dpg.set_value(levels_line_r, [list(ts), list(levels[1])])
         dpg.set_axis_limits(levels_xaxis, 0, cbs.pipe.length)
         if not dpg.get_value(rows[cbs.current_rec][1]):
             dpg.set_value(rows[cbs.current_rec][1], True)
             dpg.show_item(lines[cbs.current_rec])
 
-    if cbs.pipe.final_fft_ready.is_set():
-        data = cbs.pipe.get_fft()
-        cbs.pipe.final_fft_ready.clear()
-        dpg.set_value(lines[cbs.current_rec], list(data))
+    # if cbs.pipe.final_fft_ready.is_set():
+    #     data = cbs.pipe.get_fft()
+    #     dpg.set_value(lines[cbs.current_rec], list(data))
+
+    # print(dpg.get_item_rect_size(fft_plot))
 
     dpg.render_dearpygui_frame()
 

@@ -103,7 +103,7 @@ class AnalyserPipeline(Thread):
         # Analyzer params
         self.analyzer_mode: Literal["rta", "recording"] = "recording"
         self.ref: Literal["none", "channel B", "generator"] = "channel B"
-        self.weighting: Literal["none","pink"] = "none"
+        self.weighting: Literal["none", "pink"] = "none"
         self.rta_bucket_size: int = 2**15
         self.freq_length = 1024
         self.window_width = 1 / 10
@@ -140,18 +140,26 @@ class AnalyserPipeline(Thread):
         combined_sos = np.vstack([pinking_sos, band_sos])
         zi = sosfilt_zi(combined_sos)
         self.gen_running.set()
-        n = int(self.length * self.sample_rate // self.chunk_size)
+        s_pad = np.rint(0.5 * self.sample_rate / self.chunk_size).astype(int)
+        n = np.rint(self.length * self.sample_rate / self.chunk_size).astype(int)
+        e_pad = np.rint(self.end_padding * self.sample_rate / self.chunk_size).astype(
+            int
+        )
         att = 2**-10
-        for i in range(n):
+        for i in range(s_pad + n + e_pad):
             if not self.run_flag.is_set():
                 break
-            white = np.random.uniform(-1, 1, self.chunk_size)
+            if i <= s_pad:
+                white = np.zeros(self.chunk_size)
+            elif i <= s_pad + n:
+                white = np.random.uniform(-1, 1, self.chunk_size)
+            else:
+                white = np.zeros(self.chunk_size)
             pink, zi = sosfilt(combined_sos, white, -1, zi)
             pink = np.array(pink, np.float64)
-            att = min(1, att*2)
-            chunk = np.column_stack((pink, pink))*att
+            att = min(1, att * 2)
+            chunk = np.column_stack((pink, pink)) * att * 3
             self.output_queue.put(chunk)
-        self.padding_gen(self.end_padding)
         self.gen_running.clear()
 
     def log_sweep_gen(self) -> None:
@@ -170,7 +178,7 @@ class AnalyserPipeline(Thread):
         """
 
         n = int(self.length * self.sample_rate // self.chunk_size)
-        ts = np.arange(n * self.chunk_size)
+        ts = np.arange(0, n * self.chunk_size)
         f0 = self.band[0] / self.sample_rate
         f1 = self.band[1] / self.sample_rate
         t1 = ts[-1]
@@ -186,7 +194,7 @@ class AnalyserPipeline(Thread):
         self.padding_gen(self.end_padding)
         self.gen_running.clear()
 
-    def padding_gen(self, length:float) -> None:
+    def padding_gen(self, length: float) -> None:
         """
         Generates and enqueues zero-padding audio chunks to the output queue.
         This generator method creates a specified number of zero-filled audio chunks,
@@ -214,7 +222,7 @@ class AnalyserPipeline(Thread):
                 blocksize=self.chunk_size, device=self.device, channels=2
             )
             self.sample_rate = self.stream.samplerate
-    
+
     @staticmethod
     def get_default_io() -> tuple[int, int]:
         dev = []
@@ -290,7 +298,11 @@ class AnalyserPipeline(Thread):
                     self.record = np.append(self.record, chunk, 0)
                     self.record_upd.set()
                 with self.levels_lock:
-                    self.levels = np.append(self.levels, np.reshape(np.max(np.abs(chunk), axis=0),(2,1)),1)
+                    self.levels = np.append(
+                        self.levels,
+                        np.reshape(np.max(np.abs(chunk), axis=0), (2, 1)),
+                        1,
+                    )
                     self.times = np.append(self.times, tot_samples / self.sample_rate)
             except Empty:
                 sleep(0.1)
@@ -333,17 +345,17 @@ class AnalyserPipeline(Thread):
         )
         fft_step = self.sample_rate / len(yf) / 2
         half_w = 2 ** (self.window_width / 2)
-        window_start = np.astype(log_f / half_w / fft_step, int)
-        window_end = np.astype(log_f * half_w / fft_step, int)
+        window_start = np.rint(log_f / half_w / fft_step).astype(int)
+        window_end = np.rint(log_f * half_w / fft_step).astype(int) + 1
         log_y = np.zeros_like(log_f)
         for i, start, end in zip(range(len(log_f)), window_start, window_end):
-            if end <= start:
-                log_y[i] = yf[start]
-            else:
-                ys = yf[start:end]
-                # w = blackman(end - start)
-                log_y[i] = np.mean(ys)
-                # log_y[i] = np.average(ys, None, w)
+            # if end <= start:
+            #     log_y[i] = yf[start]
+            # else:
+            ys = yf[start:end]
+            # w = blackman(end - start)
+            log_y[i] = np.mean(ys)
+            # log_y[i] = np.average(ys, None, w)
         return log_f, log_y
 
     def analyzer(self):
@@ -382,7 +394,7 @@ class AnalyserPipeline(Thread):
                 sleep(0.1)
             else:
                 fs = self.sample_rate
-                nperseg = min(fs/2, len(chunk))
+                nperseg = min(fs / 2, len(chunk))
                 x, p = welch(chunk, fs, "hann", nperseg, axis=0)
                 # x, p = periodogram(chunk, fs, axis=0)
                 # print(x[1])
@@ -411,8 +423,6 @@ class AnalyserPipeline(Thread):
             with self.fft_result_lock:
                 self.fft_result = result.copy()
             self.final_fft_ready.set()
-            
-            
 
     def get_fft(self) -> NDArray[np.float64]:
         """
@@ -422,7 +432,9 @@ class AnalyserPipeline(Thread):
         """
 
         with self.fft_result_lock:
+            self.final_fft_ready.clear()
             return self.fft_result.copy()
+        
 
     def run(self):
         """
@@ -444,6 +456,8 @@ class AnalyserPipeline(Thread):
                 with self.levels_lock:
                     self.levels = np.empty((2, 0), dtype=np.float64)
                     self.times = np.empty(0, np.float64)
+                with self.record_lock:
+                    self.record = np.empty((0, 2), dtype=np.float64)
                 if self.gen_mode == "log sweep":
                     gen = Thread(None, self.log_sweep_gen, daemon=True)
                 elif self.gen_mode == "pink noise":
@@ -452,7 +466,7 @@ class AnalyserPipeline(Thread):
                     raise ValueError(f"Unknown generator mode: {self.gen_mode}")
                 gen.start()
                 self.gen_running.wait()
-                io = Thread(None, self.audio_io,daemon=True)
+                io = Thread(None, self.audio_io, daemon=True)
                 io.start()
                 self.audio_running.wait()
                 recorder = Thread(None, self.recorder, daemon=True)
@@ -494,17 +508,17 @@ if __name__ == "__main__":
     pipe.start()
 
     # Configure pipeline parameters
-    pipe.gen_mode = "pink noise"  # Use pink noise as the test signal
+    pipe.gen_mode = "log sweep"  # Use pink noise as the test signal
     pipe.analyzer_mode = "recording"  # Analyze the full recording after playback
     pipe.ref = "generator"  # No reference channel normalization
     # pipe.weighting = "pink"  # Apply pink noise spectral weighting
     # pipe.audio_mode = "silent"  # Do not use actual audio hardware
-    pipe.device = (20, 16)
-    pipe.rta_bucket_size=int(pipe.sample_rate/4)
+    pipe.device = (12, 11)
+    pipe.rta_bucket_size = int(pipe.sample_rate / 4)
 
     pipe.band = (20, 20e3)  # Frequency band for generation/analysis
     pipe.length = 20
-    pipe.window_width = 1 / 3  # Duration of the test signal in seconds
+    pipe.window_width = 1 / 10  # Duration of the test signal in seconds
 
     # Set up interactive plotting
     plt.ion()
@@ -517,7 +531,7 @@ if __name__ == "__main__":
     axs[0].set_ylim(-100, 20)
     lineL = axs[1].plot([], [])[0]
     lineR = axs[1].plot([], [])[0]
-    axs[1].set_xlim(-1, pipe.length+5)
+    axs[1].set_xlim(-1, pipe.length + 5)
     axs[1].set_ylim(0, 1)
 
     # Start the pipeline processing

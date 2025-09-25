@@ -1,6 +1,8 @@
 import dearpygui.dearpygui as dpg
 import dearpygui.demo as demo
+import dearpygui
 
+print(f"dearpygui.__version__ = {dearpygui.__version__}")
 dpg.create_context()
 dpg.create_viewport(title='Custom Title', width=600, height=600)
 
