@@ -177,7 +177,7 @@ class AnalyserPipeline(Thread):
             None directly, but may propagate exceptions from queue operations or signal generation.
         """
 
-        n = int(self.length * self.sample_rate // self.chunk_size)
+        n = np.rint(self.length * self.sample_rate / self.chunk_size).astype(int)
         ts = np.arange(0, n * self.chunk_size)
         f0 = self.band[0] / self.sample_rate
         f1 = self.band[1] / self.sample_rate
@@ -191,7 +191,8 @@ class AnalyserPipeline(Thread):
             chunk = chirp(ts[start:end], f0, t1, f1, method="logarithmic") * 0.5
             chunk = np.column_stack((chunk, chunk))
             self.output_queue.put(chunk)
-        self.padding_gen(self.end_padding)
+        pass
+        # self.padding_gen(self.end_padding)
         self.gen_running.clear()
 
     def padding_gen(self, length: float) -> None:
@@ -253,6 +254,10 @@ class AnalyserPipeline(Thread):
             self.audio_running.set()
             while self.gen_running.is_set() or not self.output_queue.empty():
                 if not self.run_flag.is_set():
+                    try:
+                        self.output_queue.get(False)
+                    except Empty:
+                        pass
                     break
                 try:
                     output_chunk = self.output_queue.get(False)

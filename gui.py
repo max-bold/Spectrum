@@ -292,12 +292,6 @@ while dpg.is_dearpygui_running():
             dpg.set_value(rows[cbs.current_rec][1], True)
             dpg.show_item(lines[cbs.current_rec])
 
-    # if cbs.pipe.final_fft_ready.is_set():
-    #     data = cbs.pipe.get_fft()
-    #     dpg.set_value(lines[cbs.current_rec], list(data))
-
-    # print(dpg.get_item_rect_size(fft_plot))
-
     dpg.render_dearpygui_frame()
 
 dpg.destroy_context()
