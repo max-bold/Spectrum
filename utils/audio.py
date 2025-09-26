@@ -52,16 +52,18 @@ class io_list_updater(Thread):
                 idx = info["index"]
                 name = info["name"]
                 ha = hostapi_names[info["hostapi"]]
+                
                 ins = info["max_input_channels"]
                 outs = info["max_output_channels"]
                 fs = info["default_samplerate"]
                 text = f"{idx}: {name}, {ha}, {ins}>>{outs}, {fs/1000:.1f} kHz"
-                if io is None:
-                    devices.append(text)
-                elif io == "input" and ins:
-                    devices.append(text)
-                elif io == "output" and outs:
-                    devices.append(text)
+                if not ha == "Windows WDM-KS":
+                    if io is None:
+                        devices.append(text)
+                    elif io == "input" and ins:
+                        devices.append(text)
+                    elif io == "output" and outs:
+                        devices.append(text)
         return devices
 
     @staticmethod

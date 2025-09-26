@@ -27,7 +27,10 @@ def list_devices(io:Literal["input", "output"]|None=None)->list[str]:
     return devices
 
 def get_device_indx(name:str)->int:
-    return int(dev.split(":")[0])
+    return int(name.split(":")[0])
 
-for dev in list_devices():
-    print(dev)
+# for dev in list_devices():
+#     print(dev)
+if __name__ == "__main__":
+    for api in sd.query_hostapis():
+        print(api)

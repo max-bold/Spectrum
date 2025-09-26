@@ -72,7 +72,7 @@ with dpg.window(tag="Primary Window") as main_window:
                     dpg.set_axis_limits(levels_yaxis, 0, 1)
                     levels_line_l = dpg.add_line_series([], [])
                     levels_line_r = dpg.add_line_series([], [])
-        with dpg.group():
+        with dpg.child_window():
             run_btn = dpg.add_button(
                 label="OFF",
                 width=-1,

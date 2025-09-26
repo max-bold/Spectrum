@@ -209,6 +209,10 @@ class AnalyserPipeline(Thread):
             zeros = np.zeros((self.chunk_size, 2))
             self.output_queue.put(zeros)
 
+    def host_api_is_wasapi(self):
+        
+
+
     def init_stream(self):
         """
         Initializes the audio stream for input/output using the specified device and chunk size.
