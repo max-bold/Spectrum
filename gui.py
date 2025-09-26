@@ -1,12 +1,7 @@
-from email.policy import default
-from operator import call
-from os import pipe, rename
 from time import time
-from turtle import width
 import dearpygui.dearpygui as dpg
 import cbs
 from utils.analyzer import AnalyserPipeline
-import numpy as np
 
 default_pipeline = AnalyserPipeline()
 REC_NUMBER = 5

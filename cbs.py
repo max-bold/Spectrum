@@ -1,11 +1,8 @@
 from tkinter import NO
 import dearpygui.dearpygui as dpg
 
-from time import time, sleep
-from threading import Thread
 from utils.analyzer import AnalyserPipeline
 from typing import Literal
-from sounddevice import query_devices
 from utils.audio import io_list_updater, InputMeter
 
 pipe = AnalyserPipeline()
