@@ -92,14 +92,18 @@ class InputMeter(Thread):
     def run(self):
         while True:
             self.enable.wait()
-            stream = sd.InputStream(device=self.device, channels=2)
-            stream.start()
-            while self.enable.is_set():
-                chunk = stream.read(1024)[0]
-                levels: np.ndarray = np.max(np.abs(chunk), axis=0)
-                with self.level_lock:
-                    self.level = levels.copy()
-            stream.close()
+            try:
+                stream = sd.InputStream(device=self.device, channels=2)
+                stream.start()
+                while self.enable.is_set():
+                    chunk = stream.read(1024)[0]
+                    levels: np.ndarray = np.max(np.abs(chunk), axis=0)
+                    with self.level_lock:
+                        self.level = levels.copy()
+                stream.close()
+            except sd.PortAudioError as e:
+                self.enable.clear()
+                print(e)
 
     def get_levels(self) -> np.ndarray:
         with self.level_lock:

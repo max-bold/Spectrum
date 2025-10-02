@@ -23,7 +23,7 @@ def run_btn():
         io_upd.enable.clear()
         io_upd.paused.wait()
         meter.enable.clear()
-        dpg.set_value("meter_cb", False)
+        # dpg.set_value("meter_cb", False)
         pipe.run_flag.set()
     else:
         pipe.run_flag.clear()
@@ -126,3 +126,7 @@ def record_set_name(sender, name, data) -> None:
     for row, line in zip(*data):
         if sender == row[2]:
             dpg.set_item_label(line, name)
+
+def set_filter_window_func(sender, func:Literal["blackman","boxcar"]) -> None:
+        pipe.filter_window_func = func
+

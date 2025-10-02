@@ -1,3 +1,4 @@
+from logging import raiseExceptions
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.axes import Axes
@@ -9,7 +10,15 @@ from typing import Callable, Literal
 from numpy.typing import NDArray
 from abc import ABC
 from queue import Queue
-from scipy.signal import chirp, butter, sosfilt, sosfilt_zi, welch, periodogram
+from scipy.signal import (
+    chirp,
+    butter,
+    sosfilt,
+    sosfilt_zi,
+    welch,
+    periodogram,
+    get_window,
+)
 from scipy.signal.windows import blackman
 import sounddevice as sd
 
@@ -81,6 +90,7 @@ class AnalyserPipeline(Thread):
         self.output_queue: Queue[NDArray[np.float64]] = Queue(10)
         self.gen_running = Event()
         self.end_padding: float = 2.0  # seconds
+        self.noise_boost: float = 30.0
 
         # AudioIO  params
         self.sample_rate: int = 96000
@@ -90,6 +100,8 @@ class AnalyserPipeline(Thread):
         self.audio_running = Event()
         self.audio_mode: Literal["normal", "silent"] = "normal"
         self.stream: sd.Stream | None = None
+        self.gen_record = np.empty(0,np.float64)
+        self.input_record = np.empty(0,np.float64)
 
         # Recorder params
         self.record = np.empty((0, 2), dtype=np.float64)
@@ -107,6 +119,7 @@ class AnalyserPipeline(Thread):
         self.rta_bucket_size: int = 2**15
         self.freq_length = 1024
         self.window_width = 1 / 10
+        self.filter_window_func: Literal["blackman", "boxcar"] = "boxcar"
         self.fft_result = np.empty((2, 0), np.float64)
         self.fft_result_lock = Lock()
         self.final_fft_ready = Event()
@@ -158,7 +171,7 @@ class AnalyserPipeline(Thread):
             pink, zi = sosfilt(combined_sos, white, -1, zi)
             pink = np.array(pink, np.float64)
             att = min(1, att * 2)
-            chunk = np.column_stack((pink, pink)) * att * 3
+            chunk = np.column_stack((pink, pink)) * att * self.noise_boost
             self.output_queue.put(chunk)
         self.gen_running.clear()
 
@@ -183,16 +196,17 @@ class AnalyserPipeline(Thread):
         f1 = self.band[1] / self.sample_rate
         t1 = ts[-1]
         self.gen_running.set()
+        self.padding_gen(0.5)
         for i in range(n):
             if not self.run_flag.is_set():
                 break
             start = i * self.chunk_size
             end = (i + 1) * self.chunk_size
-            chunk = chirp(ts[start:end], f0, t1, f1, method="logarithmic") * 0.5
+            chunk = chirp(ts[start:end], f0, t1, f1, method="logarithmic",phi=90) * 0.5
             chunk = np.column_stack((chunk, chunk))
             self.output_queue.put(chunk)
         pass
-        # self.padding_gen(self.end_padding)
+        self.padding_gen(self.end_padding)
         self.gen_running.clear()
 
     def padding_gen(self, length: float) -> None:
@@ -210,8 +224,18 @@ class AnalyserPipeline(Thread):
             self.output_queue.put(zeros)
 
     def host_api_is_wasapi(self):
-        
+        hostapi_names = []
+        for hostapi in sd.query_hostapis():
+            if isinstance(hostapi, dict):
+                hostapi_names.append(hostapi["name"])
 
+        for dev in self.device:
+            dev_info = sd.query_devices(dev)
+            if isinstance(dev_info, dict):
+                if not hostapi_names[dev_info["hostapi"]] == "Windows WASAPI":
+                    return False
+
+        return True
 
     def init_stream(self):
         """
@@ -222,11 +246,35 @@ class AnalyserPipeline(Thread):
         Raises:
             sounddevice.PortAudioError: If the stream cannot be initialized with the given parameters.
         """
+        # print(sd._initialized)
+        # if self.host_api_is_wasapi():
+        #     extra_settings = sd.WasapiSettings(exclusive=True)
+        # else:
+        extra_settings = None
+        # pass
+        # print(self.device, self.chunk_size)
+
+        # TODO: Make WASAPI exlusive mode to work, wtf!
+
         if self.audio_mode == "normal":
-            self.stream = sd.Stream(
-                blocksize=self.chunk_size, device=self.device, channels=2
-            )
-            self.sample_rate = self.stream.samplerate
+            try:
+                self.stream = sd.Stream(
+                    blocksize=self.chunk_size,
+                    device=self.device,
+                    channels=2,
+                    extra_settings=extra_settings
+                )
+                self.sample_rate = self.stream.samplerate
+                return True
+            except sd.PortAudioError as e:
+                print(e)
+                if not self.stream is None:
+                    self.stream.abort()
+                sd._terminate()
+                sd._initialize()
+                return False
+        else:
+            return True
 
     @staticmethod
     def get_default_io() -> tuple[int, int]:
@@ -247,7 +295,8 @@ class AnalyserPipeline(Thread):
         Raises:
             RuntimeError: If the audio stream is not initialized before calling this method.
         """
-
+        if not self.run_flag.is_set():
+            return
         if self.stream is None and self.audio_mode == "normal":
             raise RuntimeError(
                 "Stream must be initialized before calling starting audio_io"
@@ -255,19 +304,26 @@ class AnalyserPipeline(Thread):
         else:
             if self.stream is not None:
                 self.stream.start()
+                self.stream.write(np.zeros((self.chunk_size*4,2),dtype=np.float32))
             self.audio_running.set()
             while self.gen_running.is_set() or not self.output_queue.empty():
                 if not self.run_flag.is_set():
                     try:
+                        # To unblock waiting generator
                         self.output_queue.get(False)
                     except Empty:
                         pass
                     break
                 try:
-                    output_chunk = self.output_queue.get(False)
+                    output_chunk = self.output_queue.get_nowait()
+                    self.gen_record = np.append(self.gen_record,output_chunk[:,0])
                     if self.stream is not None:
-                        self.stream.write(output_chunk.astype(np.float32))
-                        input_chunk = self.stream.read(len(output_chunk))[0]
+                        if self.stream.write(output_chunk.astype(np.float32)):
+                            print("Output buffer underflow")
+                        input_chunk, uf = self.stream.read(len(output_chunk))
+                        self.input_record = np.append(self.input_record,input_chunk[:,0])
+                        if uf:
+                            print("Input buffer overflow")
                     else:
                         input_chunk = output_chunk
                         sleep(self.chunk_size / self.sample_rate)
@@ -282,6 +338,7 @@ class AnalyserPipeline(Thread):
                     sleep(0.1)
             if self.stream is not None:
                 self.stream.stop()
+                self.stream.abort()
             self.audio_running.clear()
 
     def recorder(self):
@@ -345,7 +402,6 @@ class AnalyserPipeline(Thread):
         n = int(
             self.freq_length / np.log(20e3 / 20) * np.log(self.band[1] / self.band[0])
         )
-        # print(points)
         log_f = np.logspace(
             np.log10(self.band[0]),
             np.log10(self.band[1]),
@@ -358,13 +414,9 @@ class AnalyserPipeline(Thread):
         window_end = np.rint(log_f * half_w / fft_step).astype(int) + 1
         log_y = np.zeros_like(log_f)
         for i, start, end in zip(range(len(log_f)), window_start, window_end):
-            # if end <= start:
-            #     log_y[i] = yf[start]
-            # else:
             ys = yf[start:end]
-            # w = blackman(end - start)
-            log_y[i] = np.mean(ys)
-            # log_y[i] = np.average(ys, None, w)
+            w = get_window(self.filter_window_func, len(ys))
+            log_y[i] = np.average(ys, None, w)
         return log_f, log_y
 
     def analyzer(self):
@@ -406,7 +458,6 @@ class AnalyserPipeline(Thread):
                 nperseg = min(fs / 2, len(chunk))
                 x, p = welch(chunk, fs, "hann", nperseg, axis=0)
                 # x, p = periodogram(chunk, fs, axis=0)
-                # print(x[1])
                 if self.ref == "none":
                     fft = p[:, 0]
                 else:
@@ -414,7 +465,9 @@ class AnalyserPipeline(Thread):
                 if self.weighting == "pink":
                     fft *= x
                 log_f, log_p = self.log_filter(fft)
-                result = np.vstack((log_f, 10 * np.log10(log_p.clip(1e-20))))
+                result = np.vstack((log_f, 10 * np.log10(log_p.clip(1e-20)))).astype(
+                    np.float64
+                )
                 with self.fft_result_lock:
                     self.fft_result = result.copy()
         if self.analyzer_mode == "recording":
@@ -428,7 +481,9 @@ class AnalyserPipeline(Thread):
             if self.weighting == "pink":
                 fft *= x
             log_f, log_p = self.log_filter(fft)
-            result = np.vstack((log_f, 10 * np.log10(log_p.clip(1e-20))))
+            result = np.vstack((log_f, 10 * np.log10(log_p.clip(1e-20)))).astype(
+                np.float64
+            )
             with self.fft_result_lock:
                 self.fft_result = result.copy()
             self.final_fft_ready.set()
@@ -443,7 +498,6 @@ class AnalyserPipeline(Thread):
         with self.fft_result_lock:
             self.final_fft_ready.clear()
             return self.fft_result.copy()
-        
 
     def run(self):
         """
@@ -461,38 +515,41 @@ class AnalyserPipeline(Thread):
         while not self.stop_flag.is_set():
             self.run_flag.wait()
             if not self.stop_flag.is_set():
-                self.init_stream()
-                with self.levels_lock:
-                    self.levels = np.empty((2, 0), dtype=np.float64)
-                    self.times = np.empty(0, np.float64)
-                with self.record_lock:
-                    self.record = np.empty((0, 2), dtype=np.float64)
-                if self.gen_mode == "log sweep":
-                    gen = Thread(None, self.log_sweep_gen, daemon=True)
-                elif self.gen_mode == "pink noise":
-                    gen = Thread(None, self.pink_noise_gen, daemon=True)
-                else:
-                    raise ValueError(f"Unknown generator mode: {self.gen_mode}")
-                gen.start()
-                self.gen_running.wait()
-                io = Thread(None, self.audio_io, daemon=True)
-                io.start()
-                self.audio_running.wait()
-                recorder = Thread(None, self.recorder, daemon=True)
-                recorder.start()
-                self.recorder_running.wait()
-                analyzer = Thread(None, self.analyzer, daemon=True)
-                analyzer.start()
-                print("Finished initialization. Waiting workers to stop")
-                gen.join()
-                print("Generator stopped")
-                io.join()
-                print("Audio IO stopped")
-                recorder.join()
-                print("Recorder stopped")
-                analyzer.join()
-                print("Analyzer stopped")
-                print("Clearing run flag")
+                if self.init_stream():
+                    with self.levels_lock:
+                        self.levels = np.empty((2, 0), dtype=np.float64)
+                        self.times = np.empty(0, np.float64)
+                    with self.record_lock:
+                        self.record = np.empty((0, 2), dtype=np.float64)
+                    if self.gen_mode == "log sweep":
+                        gen = Thread(None, self.log_sweep_gen, daemon=True)
+                    elif self.gen_mode == "pink noise":
+                        gen = Thread(None, self.pink_noise_gen, daemon=True)
+                    else:
+                        raise ValueError(f"Unknown generator mode: {self.gen_mode}")
+                    gen.start()
+                    self.gen_running.wait()
+                    io = Thread(None, self.audio_io, daemon=True)
+                    io.start()
+                    self.audio_running.wait()
+                    recorder = Thread(None, self.recorder, daemon=True)
+                    recorder.start()
+                    self.recorder_running.wait()
+                    analyzer = Thread(None, self.analyzer, daemon=True)
+                    analyzer.start()
+                    print("Finished initialization. Waiting workers to stop")
+                    gen.join()
+                    print("Generator stopped")
+                    io.join()
+                    print("Audio IO stopped")
+                    recorder.join()
+                    print("Recorder stopped")
+                    analyzer.join()
+                    print("Analyzer stopped")
+                    print("Clearing run flag")
+                    plt.plot(self.input_record)
+                    plt.plot(self.gen_record)
+                    plt.show()
             self.run_flag.clear()
 
     def stop(self):

@@ -67,104 +67,110 @@ with dpg.window(tag="Primary Window") as main_window:
                     dpg.set_axis_limits(levels_yaxis, 0, 1)
                     levels_line_l = dpg.add_line_series([], [])
                     levels_line_r = dpg.add_line_series([], [])
-        with dpg.child_window():
+        with dpg.group():
             run_btn = dpg.add_button(
                 label="OFF",
                 width=-1,
                 height=50,
                 callback=cbs.run_btn,
                 tag="run btn",
-                # user_data=(red_theme, green_theme),
             )
             dpg.bind_item_theme(run_btn, "green_theme")
+            with dpg.child_window(height=-142):
 
-            with dpg.collapsing_header(label="generator", default_open=True):
-                dpg.add_combo(
-                    ["log sweep", "pink noise"],
-                    width=-1,
-                    default_value=default_pipeline.gen_mode,
-                    callback=cbs.set_genmode,
-                )
-                dpg.add_text("band, Hz")
-                dpg.add_input_intx(
-                    default_value=[
-                        int(default_pipeline.band[0]),
-                        int(default_pipeline.band[1]),
-                    ],
-                    size=2,
-                    width=-1,
-                    callback=cbs.set_band,
-                )
-                dpg.add_text("length, s")
-                dpg.add_input_float(
-                    width=-1,
-                    step=0,
-                    step_fast=0,
-                    default_value=default_pipeline.length,
-                    format="%.1f",
-                    tag="length input",
-                    callback=cbs.set_length,
-                )
-
-            with dpg.collapsing_header(label="audio io"):
-                with dpg.group(width=-1):
-                    dpg.add_text("input")
-                    inputs_combo = dpg.add_combo(
-                        default_value="default input", callback=cbs.set_input
+                with dpg.collapsing_header(label="generator", default_open=True):
+                    dpg.add_combo(
+                        ["log sweep", "pink noise"],
+                        width=-1,
+                        default_value=default_pipeline.gen_mode,
+                        callback=cbs.set_genmode,
                     )
-                    with dpg.group(horizontal=True):
-                        mon_cb = dpg.add_checkbox(
-                            callback=cbs.set_input_meter, tag="meter_cb"
+                    dpg.add_text("band, Hz")
+                    dpg.add_input_intx(
+                        default_value=[
+                            int(default_pipeline.band[0]),
+                            int(default_pipeline.band[1]),
+                        ],
+                        size=2,
+                        width=-1,
+                        callback=cbs.set_band,
+                    )
+                    dpg.add_text("length, s")
+                    dpg.add_input_float(
+                        width=-1,
+                        step=0,
+                        step_fast=0,
+                        default_value=default_pipeline.length,
+                        format="%.1f",
+                        tag="length input",
+                        callback=cbs.set_length,
+                    )
+
+                with dpg.collapsing_header(label="audio io"):
+                    with dpg.group(width=-1):
+                        dpg.add_text("input")
+                        inputs_combo = dpg.add_combo(
+                            default_value="default input", callback=cbs.set_input
                         )
-                        with dpg.group():
-                            left_level = dpg.add_progress_bar(height=7)
-                            right_level = dpg.add_progress_bar(height=7)
-                    dpg.add_text("output")
-                    outputs_combo = dpg.add_combo(
-                        default_value="default output", callback=cbs.set_output
-                    )
+                        with dpg.group(horizontal=True):
+                            mon_cb = dpg.add_checkbox(
+                                callback=cbs.set_input_meter, tag="meter_cb"
+                            )
+                            with dpg.group():
+                                left_level = dpg.add_progress_bar(height=7)
+                                right_level = dpg.add_progress_bar(height=7)
+                        dpg.add_text("output")
+                        outputs_combo = dpg.add_combo(
+                            default_value="default output", callback=cbs.set_output
+                        )
 
-            with dpg.collapsing_header(label="analyzer"):
-                with dpg.group(width=-1):
-                    dpg.add_text("mode")
-                    analyzer_mode = dpg.add_combo(
-                        ["rta", "recording"],
-                        default_value="recording",
-                        callback=cbs.set_analyzer_mode,
-                    )
-                    with dpg.group() as rta_bucket_size_group:
-                        dpg.add_text("rta bucket size, samples")
+                with dpg.collapsing_header(label="analyzer"):
+                    with dpg.group(width=-1):
+                        dpg.add_text("mode")
+                        analyzer_mode = dpg.add_combo(
+                            ["rta", "recording"],
+                            default_value="recording",
+                            callback=cbs.set_analyzer_mode,
+                        )
+                        with dpg.group() as rta_bucket_size_group:
+                            dpg.add_text("rta bucket size, samples")
+                            dpg.add_input_int(
+                                default_value=default_pipeline.rta_bucket_size,
+                                callback=cbs.set_bucket_size,
+                                step=0,
+                            )
+                        dpg.add_text("reference")
+                        dpg.add_combo(
+                            ["none", "channel B", "generator"],
+                            default_value="channel B",
+                            callback=cbs.set_analyzer_ref,
+                        )
+                        dpg.add_text("weighting")
+                        dpg.add_combo(
+                            ["none", "pink"],
+                            default_value="none",
+                            callback=cbs.set_analyzer_weighting,
+                        )
+                with dpg.collapsing_header(label="filtering"):
+                    with dpg.group(width=-1):
+                        dpg.add_text("window width, octaves")
+                        dpg.add_input_float(
+                            default_value=default_pipeline.window_width,
+                            callback=cbs.set_window_width,
+                            step=0.1,
+                        )
+                        dpg.add_text("pints number")
                         dpg.add_input_int(
-                            default_value=default_pipeline.rta_bucket_size,
-                            callback=cbs.set_bucket_size,
+                            default_value=default_pipeline.freq_length,
+                            callback=cbs.set_freq_length,
                             step=0,
                         )
-                    dpg.add_text("reference")
-                    dpg.add_combo(
-                        ["none", "channel B", "generator"],
-                        default_value="channel B",
-                        callback=cbs.set_analyzer_ref,
-                    )
-                    dpg.add_text("weighting")
-                    dpg.add_combo(
-                        ["none", "pink"],
-                        default_value="none",
-                        callback=cbs.set_analyzer_weighting,
-                    )
-            with dpg.collapsing_header(label="filtering"):
-                with dpg.group(width=-1):
-                    dpg.add_text("window width, octaves")
-                    dpg.add_input_float(
-                        default_value=default_pipeline.window_width,
-                        callback=cbs.set_window_width,
-                        step=0.1,
-                    )
-                    dpg.add_text("pints number")
-                    dpg.add_input_int(
-                        default_value=default_pipeline.freq_length,
-                        callback=cbs.set_freq_length,
-                        step=0,
-                    )
+                        dpg.add_text("window function")
+                        dpg.add_combo(
+                            ["blackman", "boxcar"],
+                            default_value=default_pipeline.filter_window_func,
+                            callback=cbs.set_filter_window_func,
+                        )
             dpg.add_separator(label="records")
             with dpg.table(header_row=False, policy=dpg.mvTable_SizingFixedFit):
                 for i in range(3):
@@ -241,6 +247,7 @@ dpg.set_primary_window("Primary Window", True)
 
 t1_enbl = False
 t1_val = 0
+t1_setpoint = 5  # seconds
 
 while dpg.is_dearpygui_running():
 
@@ -261,6 +268,7 @@ while dpg.is_dearpygui_running():
         dpg.set_item_label(run_btn, "OFF")
         dpg.bind_item_theme(run_btn, "green_theme")
 
+    # Reenable cbs.meter after t1_setpoint after all sd users have stopped
     if (
         not cbs.pipe.run_flag.is_set()
         and not cbs.meter.enable.is_set()
@@ -269,7 +277,7 @@ while dpg.is_dearpygui_running():
         if not t1_enbl:
             t1_val = time()
             t1_enbl = True
-        elif time() > t1_val + 5:
+        elif time() > t1_val + t1_setpoint:
             cbs.io_upd.enable.set()
             t1_enbl = False
     elif t1_enbl:
@@ -282,10 +290,13 @@ while dpg.is_dearpygui_running():
         ts, levels = cbs.pipe.get_levels()
         dpg.set_value(levels_line_l, [list(ts), list(levels[0])])
         dpg.set_value(levels_line_r, [list(ts), list(levels[1])])
-        dpg.set_axis_limits(levels_xaxis, 0, cbs.pipe.length)
+        max_t = cbs.pipe.length + cbs.pipe.end_padding + 0.5
+        dpg.set_axis_limits(levels_xaxis, 0, max_t)
         if not dpg.get_value(rows[cbs.current_rec][1]):
             dpg.set_value(rows[cbs.current_rec][1], True)
             dpg.show_item(lines[cbs.current_rec])
+
+    dpg.set_value(mon_cb, cbs.meter.enable.is_set())
 
     dpg.render_dearpygui_frame()
 
