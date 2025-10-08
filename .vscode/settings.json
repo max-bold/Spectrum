@@ -1,5 +1,6 @@
 {
     "python.analysis.exclude": [
         "**/info","**/sandbox","**/.git"
-    ]
+    ],
+    "python-envs.pythonProjects": []
 }

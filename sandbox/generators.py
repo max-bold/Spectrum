@@ -2,7 +2,6 @@ import numpy as np
 
 import math
 from scipy import signal
-from typing import Generator
 from abc import ABC, abstractmethod
 
 from numpy.typing import NDArray
@@ -96,7 +95,7 @@ def tone(
 def pink_noise(
     length: float,
     rate: int,
-    band: tuple[float, float] | None = None,
+    band: tuple[float, float] = (20, 20e3),
 ) -> NDArray[np.float64]:
     """
     Generate pink noise signal.
@@ -306,6 +305,7 @@ class PinkNoiseGeneratorPluggable(Pluggable):
             so we need to free one slot for it to reshoot
             and proceed the stop_event."""
             self.output_queue.get()
+
 
 class LogSweepGeneratorPluggable(Pluggable):
     """

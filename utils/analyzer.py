@@ -114,7 +114,7 @@ class AnalyserPipeline(Thread):
 
         # Analyzer params
         self.analyzer_mode: Literal["rta", "recording"] = "recording"
-        self.ref: Literal["none", "channel B", "generator"] = "channel B"
+        self.ref: Literal["none", "channel b", "generator"] = "channel b"
         self.weighting: Literal["none", "pink"] = "none"
         self.rta_bucket_size: int = 2**15
         self.freq_length = 1024
@@ -547,9 +547,9 @@ class AnalyserPipeline(Thread):
                     analyzer.join()
                     print("Analyzer stopped")
                     print("Clearing run flag")
-                    plt.plot(self.input_record)
-                    plt.plot(self.gen_record)
-                    plt.show()
+                    # plt.plot(self.input_record)
+                    # plt.plot(self.gen_record)
+                    # plt.show()
             self.run_flag.clear()
 
     def stop(self):
@@ -574,12 +574,12 @@ if __name__ == "__main__":
     pipe.start()
 
     # Configure pipeline parameters
-    pipe.gen_mode = "log sweep"  # Use pink noise as the test signal
+    pipe.gen_mode = "pink noise"  # Use pink noise as the test signal
     pipe.analyzer_mode = "recording"  # Analyze the full recording after playback
-    pipe.ref = "generator"  # No reference channel normalization
-    # pipe.weighting = "pink"  # Apply pink noise spectral weighting
+    pipe.ref = "channel B"  # No reference channel normalization
+    pipe.weighting = "pink"  # Apply pink noise spectral weighting
     # pipe.audio_mode = "silent"  # Do not use actual audio hardware
-    pipe.device = (12, 11)
+    # pipe.device = None
     pipe.rta_bucket_size = int(pipe.sample_rate / 4)
 
     pipe.band = (20, 20e3)  # Frequency band for generation/analysis

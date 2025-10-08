@@ -141,8 +141,8 @@ with dpg.window(tag="Primary Window") as main_window:
                             )
                         dpg.add_text("reference")
                         dpg.add_combo(
-                            ["none", "channel B", "generator"],
-                            default_value="channel B",
+                            ["none", "channel b", "generator"],
+                            default_value=default_pipeline.ref
                             callback=cbs.set_analyzer_ref,
                         )
                         dpg.add_text("weighting")
