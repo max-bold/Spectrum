@@ -21,6 +21,7 @@ from scipy.signal import (
 )
 from scipy.signal.windows import blackman
 import sounddevice as sd
+from classes import GenMode, RefMode
 
 
 class AnalyserPipeline(Thread):
@@ -574,9 +575,9 @@ if __name__ == "__main__":
     pipe.start()
 
     # Configure pipeline parameters
-    pipe.gen_mode = "pink noise"  # Use pink noise as the test signal
+    pipe.gen_mode = GenMode.PINK_NOISE  # Use pink noise as the test signal
     pipe.analyzer_mode = "recording"  # Analyze the full recording after playback
-    pipe.ref = "channel B"  # No reference channel normalization
+    pipe.ref = RefMode.CHANNEL_B  # No reference channel normalization
     pipe.weighting = "pink"  # Apply pink noise spectral weighting
     # pipe.audio_mode = "silent"  # Do not use actual audio hardware
     # pipe.device = None
