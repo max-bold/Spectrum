@@ -1,9 +1,10 @@
+from email.policy import default
 from tkinter import NO
 import dearpygui.dearpygui as dpg
 
 from utils.analyzer import AnalyserPipeline
 from typing import Literal
-from utils.audio import io_list_updater, InputMeter
+from utils.audio import io_list_updater, InputMeter, AudioIO, GenMode, RefMode
 
 pipe = AnalyserPipeline()
 pipe.start()
@@ -78,7 +79,7 @@ def set_analyzer_mode(s, mode: Literal["rta", "recording"]) -> None:
     pipe.analyzer_mode = mode
 
 
-def set_analyzer_ref(s, ref: Literal["none", "channel B", "generator"]) -> None:
+def set_analyzer_ref(s, ref: Literal["none", "channel b", "generator"]) -> None:
     pipe.ref = ref
 
 
@@ -130,3 +131,29 @@ def record_set_name(sender, name, data) -> None:
 def set_filter_window_func(sender, func:Literal["blackman","boxcar"]) -> None:
         pipe.filter_window_func = func
 
+class AudioIO_wrapper(AudioIO):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def set_length(self, _source: int, length: float) -> None:
+        self.length = length
+
+    def set_input_device(self, _source: int, name: str) -> None:
+        idx = io_upd.get_device_indx(name)
+        self.device = (idx, self.device[1])
+
+    def set_output_device(self, _source: int, name: str) -> None:
+        idx = io_upd.get_device_indx(name)
+        self.device = (self.device[0], idx)
+
+    def set_getnmode(self, _source: int, mode: GenMode) -> None:
+        self.gen_mode = mode
+
+    def set_band(self, _source: int, band: list[int]) -> None:
+        self.band = (float(band[0]), float(band[1]))
+
+    def set_refmode(self, _source: int, ref: RefMode) -> None:
+        self.ref = ref
+
+default_audio_io = AudioIO_wrapper()
+audio_io = AudioIO_wrapper()

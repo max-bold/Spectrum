@@ -7,30 +7,32 @@ default_pipeline = AnalyserPipeline()
 REC_NUMBER = 5
 dpg.create_context()
 
-with dpg.theme(tag="green_theme"):
-    with dpg.theme_component(dpg.mvButton):
-        dpg.add_theme_color(
-            dpg.mvThemeCol_Button, (0, 200, 0, 255), category=dpg.mvThemeCat_Core
-        )
-        dpg.add_theme_color(
-            dpg.mvThemeCol_ButtonHovered, (0, 220, 0, 255), category=dpg.mvThemeCat_Core
-        )
-        dpg.add_theme_color(
-            dpg.mvThemeCol_ButtonActive, (0, 160, 0, 255), category=dpg.mvThemeCat_Core
-        )
+import utils.themes
 
-# создаём красную тему
-with dpg.theme(tag="red_theme"):
-    with dpg.theme_component(dpg.mvButton):
-        dpg.add_theme_color(
-            dpg.mvThemeCol_Button, (200, 0, 0, 255), category=dpg.mvThemeCat_Core
-        )
-        dpg.add_theme_color(
-            dpg.mvThemeCol_ButtonHovered, (220, 0, 0, 255), category=dpg.mvThemeCat_Core
-        )
-        dpg.add_theme_color(
-            dpg.mvThemeCol_ButtonActive, (160, 0, 0, 255), category=dpg.mvThemeCat_Core
-        )
+# with dpg.theme(tag="green_theme"):
+#     with dpg.theme_component(dpg.mvButton):
+#         dpg.add_theme_color(
+#             dpg.mvThemeCol_Button, (0, 200, 0, 255), category=dpg.mvThemeCat_Core
+#         )
+#         dpg.add_theme_color(
+#             dpg.mvThemeCol_ButtonHovered, (0, 220, 0, 255), category=dpg.mvThemeCat_Core
+#         )
+#         dpg.add_theme_color(
+#             dpg.mvThemeCol_ButtonActive, (0, 160, 0, 255), category=dpg.mvThemeCat_Core
+#         )
+
+# # создаём красную тему
+# with dpg.theme(tag="red_theme"):
+#     with dpg.theme_component(dpg.mvButton):
+#         dpg.add_theme_color(
+#             dpg.mvThemeCol_Button, (200, 0, 0, 255), category=dpg.mvThemeCat_Core
+#         )
+#         dpg.add_theme_color(
+#             dpg.mvThemeCol_ButtonHovered, (220, 0, 0, 255), category=dpg.mvThemeCat_Core
+#         )
+#         dpg.add_theme_color(
+#             dpg.mvThemeCol_ButtonActive, (160, 0, 0, 255), category=dpg.mvThemeCat_Core
+#         )
 
 
 with dpg.window(tag="Primary Window") as main_window:
@@ -142,7 +144,7 @@ with dpg.window(tag="Primary Window") as main_window:
                         dpg.add_text("reference")
                         dpg.add_combo(
                             ["none", "channel b", "generator"],
-                            default_value=default_pipeline.ref
+                            default_value=default_pipeline.ref,
                             callback=cbs.set_analyzer_ref,
                         )
                         dpg.add_text("weighting")

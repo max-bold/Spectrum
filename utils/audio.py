@@ -124,7 +124,7 @@ class InputMeter(Thread):
 class AudioIO(Thread):
     def __init__(
         self,
-        length: float,
+        length: float=10.0,
         device: tuple[int, int] | tuple[None, None] = (None, None),
         gen_mode: GenMode = GenMode.LOG_SWEEP,
         band: tuple[float, float] = (20, 20000),
@@ -132,7 +132,7 @@ class AudioIO(Thread):
     ) -> None:
         self.length = length
         self.device: tuple[int | None, int | None] = device
-        self.gen_mode = gen_mode
+        self.gen_mode:GenMode = gen_mode
         self.band = band
         self.in_fs = 0
         self.in_n = 0
@@ -140,7 +140,7 @@ class AudioIO(Thread):
         self.out_n = 0
         self.record = np.empty((0, 2), np.float32)
         self.signal = np.empty((0, 2), np.float32)
-        self.ref = ref
+        self.ref: RefMode = ref
         self.out_position = 0
         self.in_position = 0
         self.record_lock = Lock()
