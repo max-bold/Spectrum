@@ -124,15 +124,16 @@ class InputMeter(Thread):
 class AudioIO(Thread):
     def __init__(
         self,
-        length: float=10.0,
+        length: float = 10.0,
         device: tuple[int, int] | tuple[None, None] = (None, None),
         gen_mode: GenMode = GenMode.LOG_SWEEP,
         band: tuple[float, float] = (20, 20000),
         ref: RefMode = RefMode.CHANNEL_B,
+        daemon=False,
     ) -> None:
         self.length = length
         self.device: tuple[int | None, int | None] = device
-        self.gen_mode:GenMode = gen_mode
+        self.gen_mode: GenMode = gen_mode
         self.band = band
         self.in_fs = 0
         self.in_n = 0
@@ -154,7 +155,7 @@ class AudioIO(Thread):
 
         self.start_time = 0
 
-        return super().__init__(daemon=True)
+        return super().__init__(daemon=daemon)
 
     def run(self) -> None:
         if WIN32:
@@ -283,6 +284,11 @@ class AudioIO(Thread):
         self.in_stop.wait()
         self.out_stop.wait()
 
+    def stop_audio(self):
+        self.running.clear()
+        self.in_stop.set()
+        self.out_stop.set()
+
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
@@ -305,7 +311,7 @@ if __name__ == "__main__":
         print(dev)
 
     # stream = sd.Stream()
-    io = AudioIO(10, gen_mode=GenMode.LOG_SWEEP, band=(100, 20000), device=(14, 12))
+    io = AudioIO(10, gen_mode=GenMode.LOG_SWEEP, band=(100, 20000), device=(14, 12), daemon=True)
     io.start()
     io.run_once()
     # while True:

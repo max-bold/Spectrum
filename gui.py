@@ -263,7 +263,7 @@ while dpg.is_dearpygui_running():
     else:
         dpg.hide_item(rta_bucket_size_group)
 
-    if cbs.pipe.run_flag.is_set():
+    if cbs.audio_io.running.is_set():
         dpg.set_item_label(run_btn, "ON")
         dpg.bind_item_theme(run_btn, "red_theme")
     else:
@@ -272,7 +272,7 @@ while dpg.is_dearpygui_running():
 
     # Reenable cbs.meter after t1_setpoint after all sd users have stopped
     if (
-        not cbs.pipe.run_flag.is_set()
+        not cbs.audio_io.running.is_set()
         and not cbs.meter.enable.is_set()
         and not cbs.io_upd.enable.is_set()
     ):

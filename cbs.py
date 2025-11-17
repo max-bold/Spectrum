@@ -2,14 +2,17 @@ from email.policy import default
 from tkinter import NO
 import dearpygui.dearpygui as dpg
 
-from utils.analyzer import AnalyserPipeline
+# from utils.analyzer import AnalyserPipeline
+from utils.analyzer import Analyzer
 from typing import Literal
 from utils.audio import io_list_updater, InputMeter, AudioIO, GenMode, RefMode
+from utils.classes import AnalyzerMode, WeightingMode, GenMode, RefMode
+from utils.windows import Windows
+    
+analyzer = Analyzer()
+analyzer.start()
 
-pipe = AnalyserPipeline()
-pipe.start()
-
-run_state = False
+# run_state = False
 
 meter = InputMeter()
 meter.start()
@@ -18,30 +21,32 @@ io_upd = io_list_updater()
 io_upd.start()
 io_upd.enable.set()
 
+audio_io = AudioIO()
+audio_io.start()
+
 
 def run_btn():
-    if not pipe.run_flag.is_set():
+    if not audio_io.running.is_set():
         io_upd.enable.clear()
         io_upd.paused.wait()
         meter.enable.clear()
         # dpg.set_value("meter_cb", False)
-        pipe.run_flag.set()
+        audio_io.running.set()
     else:
-        pipe.run_flag.clear()
+        audio_io.stop_audio()
         io_upd.enable.set()
 
 
-def set_genmode(source: int, mode: Literal["pink noise", "log sweep"]):
-    pipe.gen_mode = mode
+def set_genmode(source: int, mode: GenMode):
+    audio_io.gen_mode = mode
 
 
 def set_band(source, band: list[int]) -> None:
-    pipe.band = (float(band[0]), float(band[1]))
-
+    audio_io.band = (float(band[0]), float(band[1]))
+    analyzer.band = (float(band[0]), float(band[1]))
 
 def set_length(source: int, length: float) -> None:
-    pipe.length = length
-
+    audio_io.length = length
 
 def set_input_meter(source: int, state: bool) -> None:
     if state:
@@ -66,41 +71,40 @@ def upd_io(inputs_combo: int | str, outputs_combo: int | str) -> None:
 
 def set_input(s, name: str):
     idx = io_upd.get_device_indx(name)
-    pipe.device = (idx, pipe.device[1])
+    audio_io.device = (idx, audio_io.device[1])
     meter.device = idx
 
 
 def set_output(s, name: str) -> None:
     idx = io_upd.get_device_indx(name)
-    pipe.device = (pipe.device[0], idx)
+    audio_io.device = (audio_io.device[0], idx)
 
 
-def set_analyzer_mode(s, mode: Literal["rta", "recording"]) -> None:
-    pipe.analyzer_mode = mode
+def set_analyzer_mode(s, mode: AnalyzerMode) -> None:
+    analyzer.analyzer_mode = mode
+
+def set_analyzer_ref(s, ref: RefMode) -> None:
+    analyzer.ref = ref
+    audio_io.ref = ref
 
 
-def set_analyzer_ref(s, ref: Literal["none", "channel b", "generator"]) -> None:
-    pipe.ref = ref
-
-
-def set_analyzer_weighting(s, weighting: Literal["none", "pink"]) -> None:
-    pipe.weighting = weighting
+def set_analyzer_weighting(s, weighting: WeightingMode) -> None:
+    analyzer.weighting = weighting
 
 
 def set_bucket_size(s, size: int) -> None:
-    pipe.rta_bucket_size = size
+    analyzer.welch_n = size
 
 
 def set_window_width(s, width: float) -> None:
-    pipe.window_width = width
+    analyzer.window_width = width
 
 
 def set_freq_length(s, length: int) -> None:
-    pipe.freq_length = length
+    analyzer.freq_length = length
 
 
 current_rec = 0
-
 
 def record_used_click(sender, state, rows) -> None:
     global current_rec
@@ -128,32 +132,9 @@ def record_set_name(sender, name, data) -> None:
         if sender == row[2]:
             dpg.set_item_label(line, name)
 
-def set_filter_window_func(sender, func:Literal["blackman","boxcar"]) -> None:
-        pipe.filter_window_func = func
+def set_filter_window_func(sender, func:Windows) -> None:
+        analyzer.window_func = func
 
-class AudioIO_wrapper(AudioIO):
-    def __init__(self) -> None:
-        super().__init__()
 
-    def set_length(self, _source: int, length: float) -> None:
-        self.length = length
 
-    def set_input_device(self, _source: int, name: str) -> None:
-        idx = io_upd.get_device_indx(name)
-        self.device = (idx, self.device[1])
 
-    def set_output_device(self, _source: int, name: str) -> None:
-        idx = io_upd.get_device_indx(name)
-        self.device = (self.device[0], idx)
-
-    def set_getnmode(self, _source: int, mode: GenMode) -> None:
-        self.gen_mode = mode
-
-    def set_band(self, _source: int, band: list[int]) -> None:
-        self.band = (float(band[0]), float(band[1]))
-
-    def set_refmode(self, _source: int, ref: RefMode) -> None:
-        self.ref = ref
-
-default_audio_io = AudioIO_wrapper()
-audio_io = AudioIO_wrapper()

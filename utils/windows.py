@@ -1,9 +1,16 @@
 import numpy as np
 from typing import Literal
+from classes import ListableEnum
+
+class Windows(ListableEnum):
+    FLAT = "flat"
+    COSINE = "cosine"
+    GAUSSIAN = "gaussian"
+    TRIANGULAR = "triangular"
 
 
 def log_window(
-    window: Literal["flat", "cosine", "gaussian", "triangular"],
+    window: Windows,
     fc: float,
     df: float,
     w: float,
@@ -44,6 +51,51 @@ def log_window(
     start = int(np.rint(f_min / df))
     end = start + len(ws)
     return ws, start, end
+
+
+def log_filter(
+    x: np.ndarray,
+    fft: np.ndarray,
+    window_function: Windows = Windows.GAUSSIAN,
+    window_width: float = 1 / 10,
+    points: int = 1024,
+    band: tuple[float, float] = (20, 20000),
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Apply a logarithmic frequency filter to FFT data using a specified window function.
+
+    This function performs frequency analysis by applying a window function at logarithmically
+    spaced frequency points across the FFT spectrum. The windowed FFT values are weighted
+    and averaged to produce a smoothed frequency response.
+
+    Args:
+        x (np.ndarray): Input frequency array.
+        fft (np.ndarray): FFT data array to be filtered.
+        window_function (Windows, optional): Type of window function to apply. 
+            Defaults to Windows.GAUSSIAN.
+        window_width (float, optional): Width of the window relative to center frequency. 
+            Defaults to 1/10.
+        points (int, optional): Number of logarithmically spaced frequency points to evaluate. 
+            Defaults to 1024.
+        band (tuple[float, float], optional): Frequency band (min, max) in Hz to analyze. 
+            Defaults to (20, 20000).
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - fs: Array of logarithmically spaced frequencies where filtering was applied
+            - log_p: Array of filtered/weighted FFT magnitudes at each frequency point
+    """
+    fs = np.geomspace(band[0], band[1], points)
+    log_p = []
+    for f in fs:
+        ws, start, end = log_window(
+            window=window_function,
+            fc=f,
+            df=x[1],
+            w=window_width,
+        )
+        log_p.append(np.sum(fft[start:end] * ws) / np.sum(ws))
+    return fs, np.array(log_p)
 
 
 if __name__ == "__main__":
