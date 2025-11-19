@@ -21,9 +21,17 @@ from scipy.signal import (
 )
 from scipy.signal.windows import blackman
 import sounddevice as sd
-from classes import GenMode, RefMode, AnalyzerMode, WeightingMode
-from audio import AudioIO
-from windows import log_filter, Windows
+from .classes import GenMode, RefMode, AnalyzerMode, WeightingMode
+from .audio import AudioIO
+from .windows import log_filter, Windows
+import sys
+
+WIN32 = sys.platform == "win32"
+
+if WIN32:
+    import win32process
+    import win32api
+    import win32con
 
 
 # class AnalyserPipeline(Thread):
@@ -575,7 +583,7 @@ class Analyzer(Thread):
         self.analyzer_mode: AnalyzerMode = AnalyzerMode.PERIODIOGRAM
         self.ref: RefMode = RefMode.CHANNEL_B
         self.weighting: WeightingMode = WeightingMode.NONE
-        self.welch_n: int = 2**15
+        self.welch_n: int = 2**13
         self.sample_rate: int = 96000
         self.record: np.ndarray = np.empty((0, 2))
         self.freq_length: int = 1024
@@ -589,14 +597,19 @@ class Analyzer(Thread):
         return super().__init__(daemon=True)
 
     def run(self) -> None:
+        # if WIN32:
+        #     # получаем ID текущего потока
+        #     tid = win32api.GetCurrentThread()
+        #     # ставим BELOW_NORMAL или IDLE — выбирай, насколько хочешь унизить поток
+        #     win32process.SetThreadPriority(tid, win32process.THREAD_PRIORITY_LOWEST)
+
         while True:
             self.running.wait()
             if self.analyzer_mode == AnalyzerMode.PERIODIOGRAM:
                 x, p = periodogram(self.record, self.sample_rate, axis=0)
             elif self.analyzer_mode == AnalyzerMode.WELCH:
-                x, p = welch(
-                    self.record, self.sample_rate, "hann", self.welch_n, axis=0
-                )
+                n = min(self.welch_n, len(self.record))
+                x, p = welch(self.record, self.sample_rate, "hann", n, axis=0)
             else:
                 raise ValueError(f"Unknown mode: {self.analyzer_mode}")
             if self.ref == RefMode.NONE:

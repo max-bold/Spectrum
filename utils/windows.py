@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Literal
-from classes import ListableEnum
+from .classes import ListableEnum
 
 class Windows(ListableEnum):
     FLAT = "flat"
@@ -36,13 +36,13 @@ def log_window(
     fs = np.arange(f_min, f_max, df)
     fs_log = np.log2(fs) - np.log2(fc)
 
-    if window == "flat":
+    if window == Windows.FLAT:
         ws = np.ones_like(fs_log)
-    elif window == "gaussian":
+    elif window == Windows.GAUSSIAN:
         ws = np.exp(-((fs_log / hw * 4) ** 2) / 2)
-    elif window == "cosine":
+    elif window == Windows.COSINE:
         ws = np.cos(np.pi * fs_log / hw) / 2 + 0.5
-    elif window == "triangular":
+    elif window == Windows.TRIANGULAR:
         n = 10 ** (-30 / hw / 10)
         ws = np.power(n, np.abs(fs_log))
     else:

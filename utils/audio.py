@@ -3,9 +3,9 @@ from threading import Thread, Lock, Event
 from time import sleep, time, monotonic, monotonic_ns
 from typing import Literal, NamedTuple
 import numpy as np
-from generators import log_sweep, pink_noise
+from .generators import log_sweep, pink_noise
 import sys
-from classes import GenMode, RefMode
+from .classes import GenMode, RefMode
 
 WIN32 = sys.platform == "win32"
 
@@ -152,6 +152,7 @@ class AudioIO(Thread):
         self.out_stop = Event()
         self.in_stop = Event()
         self.padding_time = 0.2
+        self.record_completed = Event()
 
         self.start_time = 0
 
@@ -163,15 +164,25 @@ class AudioIO(Thread):
         try:
             while not self.exit.is_set():
                 self.running.wait()
+                self.record_completed.clear()
                 self.in_stop.clear()
                 self.out_stop.clear()
                 if not self.exit.is_set():
+                    info = sd.query_devices(self.device[0])
+                    if isinstance(info,dict):
+                        self.in_fs = info["default_samplerate"]
+                    info = sd.query_devices(self.device[1])
+                    if isinstance(info,dict):
+                        self.out_fs = info["default_samplerate"]
+
                     in_stream = sd.InputStream(
                         device=self.device[0],
                         callback=self.input_callback,
+                        blocksize=int(self.in_fs * 0.1),
                     )
+                    # print(in_stream.blocksize)
                     self.in_fs = in_stream.samplerate
-                    self.in_n = int((self.length + self.padding_time) * self.in_fs)
+                    self.in_n = int((self.length + self.padding_time+1) * self.in_fs)
 
                     self.record = np.zeros((self.in_n, 2), np.float32)
                     self.in_position = 0
@@ -179,7 +190,9 @@ class AudioIO(Thread):
                     out_stream = sd.OutputStream(
                         device=self.device[1],
                         callback=self.output_callback,
+                        blocksize=int(self.out_fs * 0.1),
                     )
+                    # print(out_stream.blocksize)
                     self.out_fs = out_stream.samplerate
                     self.out_n = int(self.length * self.out_fs)
                     self.out_position = 0
@@ -200,6 +213,7 @@ class AudioIO(Thread):
                     in_stream.close()
                     out_stream.close()
                 self.running.clear()
+                self.record_completed.set()
         except Exception as e:
             print(f"AudioIO exception: {e}")
         finally:
@@ -214,6 +228,7 @@ class AudioIO(Thread):
         time: PaStreamCallbackTimeInfo,
         status: sd.CallbackFlags,
     ) -> None:
+        print(n)
         s = self.out_position
         e = min(s + n, self.out_n)
         outdata.fill(0)
@@ -270,6 +285,8 @@ class AudioIO(Thread):
         for i, (s, e) in enumerate(zip(ss, es)):
             chunk = data[s:e]
             levels[i] = np.max(np.abs(chunk), axis=0)
+        # levels = np.abs(data)
+        # ts = np.arange(len(levels)) / self.in_fs
         self.levels_updated.clear()
         return ts, levels.T
 
