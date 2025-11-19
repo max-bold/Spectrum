@@ -2,18 +2,15 @@ from threading import Event, Thread
 from time import sleep, time
 import dearpygui.dearpygui as dpg
 
-# from utils.analyzer import AnalyserPipeline
 from utils.analyzer import Analyzer
 from utils.audio import io_list_updater, InputMeter, AudioIO, GenMode, RefMode
 from utils.classes import AnalyzerMode, WeightingMode, GenMode, RefMode
 from utils.windows import Windows
 
 
-
 analyzer = Analyzer()
 analyzer.start()
 
-# run_state = False
 
 meter = InputMeter()
 meter.start()
@@ -201,7 +198,6 @@ def run_analyzer():
             analyzer.sample_rate = audio_io.in_fs
             analyzer.record = audio_io.get_record()
             analyzer.running.set()
-            # print(analyzer.analyzer_mode)
 
     if analyzer.completed.is_set():
         analyzer.completed.clear()

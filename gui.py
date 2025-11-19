@@ -14,33 +14,6 @@ REC_NUMBER = 5
 
 from utils.themes import green_theme, red_theme
 
-
-# with dpg.theme(tag="green_theme"):
-#     with dpg.theme_component(dpg.mvButton):
-#         dpg.add_theme_color(
-#             dpg.mvThemeCol_Button, (0, 200, 0, 255), category=dpg.mvThemeCat_Core
-#         )
-#         dpg.add_theme_color(
-#             dpg.mvThemeCol_ButtonHovered, (0, 220, 0, 255), category=dpg.mvThemeCat_Core
-#         )
-#         dpg.add_theme_color(
-#             dpg.mvThemeCol_ButtonActive, (0, 160, 0, 255), category=dpg.mvThemeCat_Core
-#         )
-
-# # создаём красную тему
-# with dpg.theme(tag="red_theme"):
-#     with dpg.theme_component(dpg.mvButton):
-#         dpg.add_theme_color(
-#             dpg.mvThemeCol_Button, (200, 0, 0, 255), category=dpg.mvThemeCat_Core
-#         )
-#         dpg.add_theme_color(
-#             dpg.mvThemeCol_ButtonHovered, (220, 0, 0, 255), category=dpg.mvThemeCat_Core
-#         )
-#         dpg.add_theme_color(
-#             dpg.mvThemeCol_ButtonActive, (160, 0, 0, 255), category=dpg.mvThemeCat_Core
-#         )
-
-
 with dpg.window(tag="Primary Window") as main_window:
     # with dpg.menu_bar():
     #     with dpg.menu(label="File"):
@@ -63,7 +36,6 @@ with dpg.window(tag="Primary Window") as main_window:
                 )
                 dpg.set_axis_limits(xaxis, 20, 20e3)
                 with dpg.plot_axis(dpg.mvYAxis, label="PSD [db]") as yaxis:
-                    # lines = []
                     for i in range(REC_NUMBER):
                         line = dpg.add_line_series(
                             [], [], label=f"record {i+1}", show=False
@@ -253,12 +225,6 @@ dpg.setup_dearpygui()
 dpg.show_viewport()
 dpg.set_primary_window("Primary Window", True)
 
-t1_enbl = False
-t1_val = 0
-t1_setpoint = 5  # seconds
-
-t1 = cbs.Timer(5, cbs.io_upd.enable.set())
-
 while dpg.is_dearpygui_running():
 
     cbs.upd_io(inputs_combo, outputs_combo)
@@ -266,51 +232,17 @@ while dpg.is_dearpygui_running():
     if dpg.get_value(mon_cb):
         cbs.upd_level_monitor((left_level, right_level))
 
-    # if cbs.AnalyzerMode(dpg.get_value(analyzer_mode)) == cbs.AnalyzerMode.WELCH:
-    #     dpg.show_item(rta_bucket_size_group)
-    # else:
-    #     dpg.hide_item(rta_bucket_size_group)
-
     if cbs.audio_io.running.is_set():
         dpg.set_item_label(run_btn, "ON")
         dpg.bind_item_theme(run_btn, red_theme)
     else:
         dpg.set_item_label(run_btn, "OFF")
         dpg.bind_item_theme(run_btn, green_theme)
-
-    # if (
-    #     not cbs.audio_io.running.is_set()
-    #     and not cbs.meter.enable.is_set()
-    #     and not cbs.io_upd.enable.is_set()
-    # ):
-    #     # if not t1_enbl:
-    #     #     t1_val = time()
-    #     #     t1_enbl = True
-    #     # elif time() > t1_val + t1_setpoint:
-    #     #     cbs.io_upd.enable.set()
-    #     #     t1_enbl = False
-    #     t1.enabled.set()
-    # elif t1_enbl:
-    #     # t1_enbl = False
-    #     t1.enabled.clear()
     cbs.reenable_io_udater()
-    # if cbs.pipe.run_flag.is_set() or cbs.pipe.final_fft_ready.is_set():
-    #     data = cbs.pipe.get_fft()
-    #     if data.shape[1]:
-    #         dpg.set_value(lines[cbs.current_rec], list(data))
-    #     ts, levels = cbs.pipe.get_levels()
-        # dpg.set_value(levels_line_l, [list(ts), list(levels[0])])
-        # dpg.set_value(levels_line_r, [list(ts), list(levels[1])])
-    #     max_t = cbs.pipe.length + cbs.pipe.end_padding + 0.5
     max_t = dpg.get_value(rec_len)+2
     dpg.set_axis_limits(levels_xaxis, 0, max_t)
-    #     if not dpg.get_value(rows[cbs.current_rec][1]):
-    #         dpg.set_value(rows[cbs.current_rec][1], True)
-    #         dpg.show_item(lines[cbs.current_rec])
     cbs.run_analyzer()
-
     dpg.set_value(mon_cb, cbs.meter.enable.is_set())
-
     dpg.render_dearpygui_frame()
 
 dpg.destroy_context()

@@ -228,7 +228,7 @@ class AudioIO(Thread):
         time: PaStreamCallbackTimeInfo,
         status: sd.CallbackFlags,
     ) -> None:
-        print(n)
+        # print(n)
         s = self.out_position
         e = min(s + n, self.out_n)
         outdata.fill(0)
