@@ -327,7 +327,7 @@ class AudioIO(Thread):
         self.padding_time = 0.2  # Padding time in seconds for sync
 
         # Audio parameters (set during stream creation)
-        self.in_fs = 0.0  # Input sampling rate
+        self.in_fs = 0  # Input sampling rate
         self.in_n = 0  # Input buffer size
         self.out_fs = 0.0  # Output sampling rate
         self.out_n = 0  # Output buffer size
@@ -444,7 +444,7 @@ class AudioIO(Thread):
         )
 
         # Update actual sample rate from stream
-        self.in_fs = input_stream.samplerate
+        self.in_fs:int = input_stream.samplerate
 
         # Calculate buffer size (add extra time for padding and sync)
         self.in_n = int((self.length + self.padding_time + 1) * self.in_fs)
