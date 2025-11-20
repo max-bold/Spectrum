@@ -1,0 +1,7 @@
+dearpygui
+matplotlib
+numpy
+pywin32; platform_system == "Windows"
+scipy
+sounddevice
+soundfile
