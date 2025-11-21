@@ -1,0 +1,6 @@
+- Build macOS and Linux versions and test functionality on those platforms.
+- Expand documentation to include setup instructions for different operating systems.
+- Implement graph saving
+- Implement audio recording exporting/importing to common formats (WAV, MP3).
+- Implement last record analysis parameters live update
+- Implement project settings saving/loading (with all graphs, records, and settings)
