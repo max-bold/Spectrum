@@ -596,7 +596,8 @@ class AudioIO(Thread):
 
         # Replace channel 2 with generator signal if using generator reference
         if self.ref == RefMode.GENERATOR:
-            signal_length = min(len(current_data), len(self.signal))
+            signal_length = min(len(current_data), self.out_position)
+            current_data[:, 1].fill(0)
             current_data[:signal_length, 1] = self.signal[:signal_length, 0]
 
         return current_data

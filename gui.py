@@ -3,10 +3,6 @@ import dearpygui.dearpygui as dpg
 dpg.create_context()
 import cbs
 
-# from utils.analyzer import AnalyserPipeline
-# from utils.analyzer import Analyzer
-
-# default_pipeline = AnalyserPipeline()
 def_analyzer = cbs.Analyzer()
 def_audio_io = cbs.AudioIO()
 
@@ -246,3 +242,4 @@ while dpg.is_dearpygui_running():
     dpg.render_dearpygui_frame()
 
 dpg.destroy_context()
+cbs.audio_io.kill()

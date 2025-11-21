@@ -155,9 +155,9 @@ class Analyzer(Thread):
         """
         if self.ref == RefMode.NONE:
             return power_spectrum[:, 0]  # Use only channel A
-        elif self.ref == RefMode.CHANNEL_B:
+        elif self.ref == RefMode.CHANNEL_B or self.ref == RefMode.GENERATOR:
             # Ratio of channel A to channel B
-            return power_spectrum[:, 0] / power_spectrum[:, 1]
+            return power_spectrum[:, 0] / power_spectrum[:, 1].clip(1e-20)
         else:
             raise ValueError(f"Unknown reference mode: {self.ref}")
 
