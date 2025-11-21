@@ -4,6 +4,7 @@ A real-time audio spectrum analyzer built with Python and Dear PyGui, designed f
 
 ![Screenshot](info/Screenshot%202025-11-20%20212352.png)
 
+
 ## Features
 
 - **Real-time FFT Analysis**: Live frequency domain visualization with logarithmic frequency scale
