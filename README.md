@@ -2,7 +2,7 @@
 
 A real-time audio spectrum analyzer built with Python and Dear PyGui, designed for audio analysis and signal processing applications.
 
-![Screenshot](info/Screenshot%202025-11-20%20212352.png)
+![Screenshot](info/Screenshot%2025-11-21%201724.png)
 
 ## Features
 
@@ -10,9 +10,9 @@ A real-time audio spectrum analyzer built with Python and Dear PyGui, designed f
 - **Multiple Recording Channels**: Support for up to 5 simultaneous recordings
 - **Time Domain Visualization**: Real-time level meters and waveform display
 - **Audio I/O Management**: Comprehensive audio input/output device management
-- **Signal Generation**: Built-in signal generators for testing and calibration
+- **Signal Generation**: Built-in log sweep and pink noise generators for testing and calibration
 - **Professional Audio Support**: Compatible with various audio interfaces and devices
-- **Cross-platform**: Works on Windows with ASIO support
+- **Cross-platform**: Works on Windows with ASIO support, Linux, and macOS (need testing)
 
 ## Requirements
 
