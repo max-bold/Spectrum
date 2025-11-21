@@ -2,7 +2,7 @@
 
 A real-time audio spectrum analyzer built with Python and Dear PyGui, designed for audio analysis and signal processing applications.
 
-![Screenshot](info/Screenshot%2025-11-21%201724.png)
+![Screenshot](info/Screenshot%202025-11-21%20201724.png)
 
 
 ## Features
