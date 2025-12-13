@@ -168,8 +168,12 @@ def log_filter(
             w=window_width,
         )
 
+        start_idx = max(0, start_idx)
+        end_idx = min(end_idx, len(fft_data))
         # Apply weighted average to FFT data within the window
-        windowed_fft = fft_data[start_idx:end_idx] * window_weights
+        windowed_fft = (
+            fft_data[start_idx:end_idx] * window_weights[: end_idx - start_idx]
+        )
         weighted_sum = np.sum(windowed_fft)
         normalization_factor = np.sum(window_weights)
 
@@ -177,6 +181,43 @@ def log_filter(
         filtered_magnitudes.append(weighted_sum / normalization_factor)
 
     return output_frequencies, np.array(filtered_magnitudes)
+
+
+def log_filter2(
+    f: np.ndarray,
+    Pxx: np.ndarray,
+    band: tuple[float, float] = (20, 20000),
+    window: Windows = Windows.GAUSSIAN,
+    w: float = 1 / 3,
+    n_output: int = 256,
+) -> tuple[np.ndarray, np.ndarray]:
+    log_f = np.geomspace(band[0], band[1], n_output)
+    log_Pxx = np.zeros_like(log_f)
+    df = f[1]
+    for i, fc in enumerate(log_f):
+        win, si, ei = log_window(window, fc, df, w)
+        ei = min(ei, len(f))
+        if si < ei:
+            log_Pxx[i] = np.average(Pxx[si:ei], axis=-1, weights=win[: ei - si])
+    return log_f, log_Pxx
+
+def grid_filter(
+        f:np.ndarray,
+        Pxx:np.ndarray,
+        grid:np.ndarray,
+        window: Windows = Windows.GAUSSIAN,
+        w: float = 1 / 3,
+        n_output: int = 256,
+)-> tuple[np.ndarray, np.ndarray]:
+    """Aply frequency filtering using logarithmic windows centered at specified grid points."""
+    grid_Pxx = np.zeros_like(grid)
+    df = f[1]
+    for i, fc in enumerate(grid):
+        win, si, ei = log_window(window, fc, df, w)
+        ei = min(ei, len(f))
+        if si < ei:
+            grid_Pxx[i] = np.average(Pxx[si:ei], axis=-1, weights=win[: ei - si])
+    return grid, grid_Pxx
 
 
 if __name__ == "__main__":
