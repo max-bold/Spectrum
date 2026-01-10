@@ -1,6 +1,6 @@
 from scipy.signal import periodogram, welch
 import numpy as np
-from windows import Windows, log_filter2, grid_filter
+from utils.windows import Windows, log_filter2, grid_filter
 
 
 def log_periodogram(

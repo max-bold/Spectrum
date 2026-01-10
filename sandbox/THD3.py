@@ -1,16 +1,19 @@
-from numpy import fft
 import sounddevice as sd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import periodogram, chirp, fftconvolve
+from scipy.signal import fftconvolve, periodogram
 from progress.bar import ChargingBar
 from time import sleep
+import sys
+
+sys.path.append("C:\\Files\\Code\\Spectrum\\")
+from utils.fft import grid_periodogram
 
 SAMPLERATE = 96000  # Hz
 BUFFER_SIZE = 4096  # samples
 BAND = (20, 20000)  # Hz
-TIME = 10  # seconds
-FADE = int(0.1 * SAMPLERATE)  # fade length in samples
+TIME = 30  # seconds
+FADE = int(1 * SAMPLERATE)  # fade length in samples
 PADDING = int(0.5 * SAMPLERATE)  # padding length in samples
 
 # Generate logarithmic chirp signal
@@ -35,10 +38,10 @@ inv_filter = sweep[::-1] / env
 record = sd.playrec(
     signal,
     samplerate=SAMPLERATE,
-    channels=2,
-    device=(19, 17),
+    channels=1,
+    device=(35, 30),
     blocksize=BUFFER_SIZE,
-)
+)[:, 0]
 with ChargingBar("Recording", max=TIME * 10) as bar:
     for _ in range(TIME * 10):
         sleep(0.1)
@@ -65,67 +68,70 @@ sd.wait()
 # plt.grid(True, which="both", ls="--")
 # plt.show()
 
-# Get start of record (removing delay and padding)
-rec_start = np.argmax(np.abs(record[:, 0]) > 0.05) / SAMPLERATE
-# print(f"Record starts at {rec_start / SAMPLERATE:.3f}s")
-
-# t1 = TIME + rec_start
-# t2 = t1 - t1/r * np.log(2)
-# t3 = t1 - t1/r * np.log(3)
-# t4 = t1 - t1/r * np.log(4)
-# print(
-#     f"Expected reflections at: {t1:.3f}s (direct), {t2:.3f}s (1st), {t3:.3f}s (2nd), {t4:.3f}s (3rd)"
-# )
-
-# Normalize record and filter
-record = (record / np.max(np.abs(record)))[:, 0].astype(np.float64)
-inv_filter = (inv_filter / np.max(np.abs(inv_filter))).astype(np.float64)
+# # Normalize record and filter
+# record = (record / np.max(np.abs(record)))[:, 0].astype(np.float64)
+# inv_filter = (inv_filter / np.max(np.abs(inv_filter))).astype(np.float64)
 
 # Compute impulse response via convolution with inverse filter
 h = fftconvolve(record, inv_filter, mode="full")
-
-nw = int(0.2 * SAMPLERATE)
-n1 = np.argmax(np.abs(h))
-n2 = np.argmax(np.abs(h[: n1 - nw]))
-n3 = np.argmax(np.abs(h[: n2 - nw]))
-n4 = np.argmax(np.abs(h[: n3 - nw]))
-ns = [n1, n2, n3, n4]
-
-t1 = n1 / SAMPLERATE
-t2 = n2 / SAMPLERATE
-t3 = n3 / SAMPLERATE
-t4 = n4 / SAMPLERATE
-print(
-    f"Expected reflections at: {t1:.3f}s (direct), {t2:.3f}s (1st), {t3:.3f}s (2nd), {t4:.3f}s (3rd)"
-)
-# Plot impulse response
 time_axis = np.arange(len(h)) / SAMPLERATE
+
+# Find IR time
+t1 = np.argmax(np.abs(h)) / SAMPLERATE
+
+# Number of harmonics to analyze
+HN = 10
+
+# Print expected harmonic times
+for n in range(HN):
+    tn = t1 - TIME / r * np.log(n + 1)
+    print(f"{n+1}th Harmonic expected at: {tn:.3f}s")
+
+# Plot impulse response
 plt.plot(time_axis, h)
 plt.title("Impulse Response")
 plt.xlabel("Time [s]")
 plt.ylabel("Amplitude")
-plt.grid(True)
+plt.grid(True, which="both")
 plt.show()
 
 # Plot harmonics spectra
-for i, n in enumerate(ns):
-    f, Pxx = periodogram(
-        h[n - nw : n + nw], SAMPLERATE, scaling="spectrum", window="hann"
-    )
-    f_mask = (f >= 20) & (f <= 20000)
-    plt.semilogx(
-        f[f_mask], 10 * np.log10(Pxx[f_mask].clip(1e-20)), label=f"{i+1}th Harmonic"
-    )
+log_f = np.geomspace(BAND[0], BAND[1], 1024)
+THDn = np.zeros_like(log_f)
+H1 = np.zeros_like(log_f)
+for n in range(HN):
+    st = t1 - TIME / r * np.log(n + 1.5)
+    et = t1 - TIME / r * np.log(n + 0.5)
+    mask = (time_axis >= st) & (time_axis < et)
+    # print(f"{n+1}th IR length is {len(h[mask])}")
+    f, Pxx = grid_periodogram(h[mask], SAMPLERATE, log_f, window="hann")
+    if n > 0:
+        THDn += Pxx
+    else:
+        H1 = Pxx
+    # f,Pxx = periodogram(h[mask], SAMPLERATE)
+    # plt.semilogx(f, 10 * np.log10(Pxx.clip(1e-20)), label=f"{n+1}th Harmonic")
 
 # Calculate and plot noise floor
-f, Pxx = periodogram(h[: n4 - nw], SAMPLERATE, scaling="spectrum", window="hann")
-f_mask = (f >= 20) & (f <= 20000)
-plt.semilogx(f[f_mask], 10 * np.log10(Pxx[f_mask].clip(1e-20)), label="Noise Floor")
+et = t1 - TIME / r * np.log(HN + 0.5)
+noise_mask = time_axis < et
+f, Pxx = grid_periodogram(h[noise_mask], SAMPLERATE, log_f, window="hann")
+THDn += Pxx
+# f,Pxx = periodogram(h[noise_mask], SAMPLERATE)
+# plt.semilogx(f, 10 * np.log10(Pxx.clip(1e-20)), label="Noise Floor")
 
+# plt.title("Harmonics Spectrum")
+# plt.xlabel("Frequency [Hz]")
+# plt.ylabel("Power/Frequency [dB/Hz]")
+# plt.grid(True, which="both")
+# plt.legend()
+# plt.show()
 
-plt.title("Harmonics Spectrum")
+#
+THDn = np.sqrt(THDn / H1)
+plt.semilogx(f, THDn*100)
+# plt.title("THD+n")
 plt.xlabel("Frequency [Hz]")
-plt.ylabel("Power/Frequency [dB/Hz]")
-plt.grid(True, which="both", ls="--")
-plt.legend()
+plt.ylabel("THD+n [%]")
+plt.grid(True, which="both")
 plt.show()

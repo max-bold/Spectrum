@@ -207,8 +207,7 @@ def grid_filter(
         grid:np.ndarray,
         window: Windows = Windows.GAUSSIAN,
         w: float = 1 / 3,
-        n_output: int = 256,
-)-> tuple[np.ndarray, np.ndarray]:
+)-> np.ndarray:
     """Aply frequency filtering using logarithmic windows centered at specified grid points."""
     grid_Pxx = np.zeros_like(grid)
     df = f[1]
@@ -217,7 +216,7 @@ def grid_filter(
         ei = min(ei, len(f))
         if si < ei:
             grid_Pxx[i] = np.average(Pxx[si:ei], axis=-1, weights=win[: ei - si])
-    return grid, grid_Pxx
+    return grid_Pxx
 
 
 if __name__ == "__main__":
