@@ -10,6 +10,7 @@ v0.2
 v0.2.1
 - Saving analyzer and filtering parameters in record, update fields on changing current record
 - Implement saving and loading projects with all records, graphs, and settings
+- Fix pink noise generator clicking
 
 v0.3
 - Implement multi-record mode with averaging
