@@ -7,6 +7,10 @@ v0.2
 + Implement last record analysis parameters live update - done
 + Implement project settings saving/loading (with all graphs, records, and settings) - done
 
+v0.2.1
+- Saving analyzer and filtering parameters in record, update fields on changing current record
+- Implement saving and loading projects with all records, graphs, and settings
+
 v0.3
 - Implement multi-record mode with averaging
 - Update timeplot on record import
