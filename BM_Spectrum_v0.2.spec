@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['gui.py'],
+    ["gui.py"],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='BM_Spectrum_v0.1_win',
+    name="BM_Spectrum_v0.2",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

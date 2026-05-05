@@ -31,6 +31,92 @@ def build_ui(state: cbs.AppState) -> UiRefs:
     from utils.themes import green_theme
 
     with dpg.window(tag="Primary Window"):
+        fft_dialog = dpg.add_file_dialog(
+            show=False,
+            modal=True,
+            width=700,
+            height=400,
+            callback=cbs.save_fft_plot,
+            user_data=state,
+            default_filename="fft.png",
+        )
+        dpg.add_file_extension(".png", parent=fft_dialog)
+        dpg.add_file_extension(".jpg", parent=fft_dialog)
+        dpg.add_file_extension(".jpeg", parent=fft_dialog)
+        wav_dialog = dpg.add_file_dialog(
+            show=False,
+            modal=True,
+            width=700,
+            height=400,
+            callback=cbs.save_current_record_wav,
+            user_data=state,
+            default_filename="record",
+        )
+        dpg.add_file_extension(".wav", parent=wav_dialog)
+        wav_import_dialog = dpg.add_file_dialog(
+            show=False,
+            modal=True,
+            width=700,
+            height=400,
+            callback=cbs.import_wav,
+            user_data=state,
+        )
+        dpg.add_file_extension(".wav", parent=wav_import_dialog)
+        project_save_dialog = dpg.add_file_dialog(
+            show=False,
+            modal=True,
+            width=700,
+            height=400,
+            callback=cbs.save_project_as,
+            user_data=state,
+            default_filename="project.bms",
+        )
+        dpg.add_file_extension(".bms", parent=project_save_dialog)
+        project_open_dialog = dpg.add_file_dialog(
+            show=False,
+            modal=True,
+            width=700,
+            height=400,
+            callback=cbs.open_project,
+            user_data=state,
+        )
+        dpg.add_file_extension(".bms", parent=project_open_dialog)
+
+        with dpg.menu_bar():
+            with dpg.menu(label="File"):
+                dpg.add_menu_item(
+                    label="Open",
+                    callback=cbs.show_open_project_dialog,
+                    user_data=project_open_dialog,
+                )
+                dpg.add_menu_item(
+                    label="Save",
+                    callback=cbs.save_project,
+                    user_data=(state, project_save_dialog),
+                )
+                dpg.add_menu_item(
+                    label="Save As",
+                    callback=cbs.show_save_project_dialog,
+                    user_data=(state, project_save_dialog),
+                )
+                with dpg.menu(label="Import"):
+                    dpg.add_menu_item(
+                        label="WAV",
+                        callback=cbs.show_import_dialog,
+                        user_data=wav_import_dialog,
+                    )
+                with dpg.menu(label="Export"):
+                    dpg.add_menu_item(
+                        label="Plot",
+                        callback=cbs.show_export_dialog,
+                        user_data=fft_dialog,
+                    )
+                    dpg.add_menu_item(
+                        label="WAV",
+                        callback=cbs.show_wav_export_dialog,
+                        user_data=(state, wav_dialog),
+                    )
+
         with dpg.group(horizontal=True):
             with dpg.group(width=-200):
                 with dpg.plot(height=-200, label="FFT"):
@@ -147,6 +233,7 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                                 callback=cbs.set_analyzer_ref,
                                 user_data=state,
                             )
+                            state.ref_combo = ref_combo
                             dpg.add_text("Weighting")
                             dpg.add_combo(
                                 cbs.WeightingMode.list(),
