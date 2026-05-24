@@ -12,7 +12,7 @@ import sys
 import sounddevice as sd
 import numpy as np
 from threading import Thread, Lock, Event
-from time import sleep, time, monotonic, monotonic_ns
+from time import sleep
 from typing import Literal, NamedTuple
 
 from .generators import log_sweep, pink_noise
@@ -231,9 +231,21 @@ class InputMeter(Thread):
         while True:
             self.enable.wait()  # Wait for enable signal
 
+            stream = None
             try:
-                # Create stereo input stream
-                stream = sd.InputStream(device=self.device, channels=2)
+                input_info = sd.query_devices(self.device, "input")
+                if not isinstance(input_info, dict):
+                    raise sd.PortAudioError("Cannot query input device")
+
+                max_channels = int(input_info["max_input_channels"])
+                if max_channels < 1:
+                    raise sd.PortAudioError("Selected device has no input channels")
+
+                stream_channels = min(2, max_channels)
+                stream = sd.InputStream(
+                    device=self.device,
+                    channels=stream_channels,
+                )
                 stream.start()
 
                 # Continuous level monitoring loop
@@ -243,17 +255,20 @@ class InputMeter(Thread):
 
                     # Calculate peak levels for each channel
                     peak_levels: np.ndarray = np.max(np.abs(audio_chunk), axis=0)
+                    if peak_levels.size == 1:
+                        peak_levels = np.repeat(peak_levels, 2)
 
                     # Thread-safe update of level data
                     with self.level_lock:
-                        self.level = peak_levels.copy()
-
-                stream.close()
+                        self.level = peak_levels[:2].copy()
 
             except sd.PortAudioError as e:
                 # Handle audio system errors
                 self.enable.clear()
                 print(f"InputMeter PortAudio error: {e}")
+            finally:
+                if stream is not None:
+                    stream.close()
 
     def get_levels(self) -> np.ndarray:
         """Get current peak levels in a thread-safe manner.
@@ -688,8 +703,9 @@ class AudioIO(Thread):
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from matplotlib.axes import Axes
-    from scipy.signal import welch, periodogram
-    from scipy.signal.windows import gaussian
+    from scipy.signal import periodogram
+    # from scipy.signal import welch
+    # from scipy.signal.windows import gaussian
 
     pass
     # # updater = io_list_updater()

@@ -32,14 +32,14 @@ def pink_noise(
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from scipy.signal import welch, periodogram
+    from scipy.signal import periodogram
 
     fs = 96000
     n = 5 * fs
     signal = log_sweep(n, fs)
     # signal = pink_noise(n, fs)
 
-    ts = np.linspace(0, 5, n)
+    # ts = np.linspace(0, 5, n)
     # plt.plot(ts, signal[:, 0])
 
     f, p = periodogram(signal[:, 0], fs)

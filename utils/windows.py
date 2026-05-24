@@ -1,5 +1,4 @@
 import numpy as np
-from typing import Literal
 from .classes import ListableEnum
 
 
@@ -90,6 +89,19 @@ def log_window(
     return window_weights, start_index, end_index
 
 
+def _clip_window_to_data(
+    start_idx: int, end_idx: int, data_len: int
+) -> tuple[int, int, int, int] | None:
+    data_start = max(0, start_idx)
+    data_end = min(end_idx, data_len)
+    if data_start >= data_end:
+        return None
+
+    weight_start = data_start - start_idx
+    weight_end = weight_start + (data_end - data_start)
+    return data_start, data_end, weight_start, weight_end
+
+
 def log_filter(
     frequency_array: np.ndarray,
     fft_data: np.ndarray,
@@ -168,14 +180,19 @@ def log_filter(
             w=window_width,
         )
 
-        start_idx = max(0, start_idx)
-        end_idx = min(end_idx, len(fft_data))
+        clipped = _clip_window_to_data(start_idx, end_idx, len(fft_data))
+        if clipped is None:
+            filtered_magnitudes.append(0.0)
+            continue
+
+        data_start, data_end, weight_start, weight_end = clipped
+        clipped_weights = window_weights[weight_start:weight_end]
         # Apply weighted average to FFT data within the window
         windowed_fft = (
-            fft_data[start_idx:end_idx] * window_weights[: end_idx - start_idx]
+            fft_data[data_start:data_end] * clipped_weights
         )
         weighted_sum = np.sum(windowed_fft)
-        normalization_factor = np.sum(window_weights)
+        normalization_factor = np.sum(clipped_weights)
 
         # Store normalized result
         filtered_magnitudes.append(weighted_sum / normalization_factor)
@@ -196,9 +213,13 @@ def log_filter2(
     df = f[1]
     for i, fc in enumerate(log_f):
         win, si, ei = log_window(window, fc, df, w)
-        ei = min(ei, len(f))
-        if si < ei:
-            log_Pxx[i] = np.average(Pxx[si:ei], axis=-1, weights=win[: ei - si])
+        clipped = _clip_window_to_data(si, ei, len(f))
+        if clipped is not None:
+            data_start, data_end, weight_start, weight_end = clipped
+            weights = win[weight_start:weight_end]
+            log_Pxx[i] = np.average(
+                Pxx[data_start:data_end], axis=-1, weights=weights
+            )
     return log_f, log_Pxx
 
 def grid_filter(
@@ -208,14 +229,18 @@ def grid_filter(
         window: Windows = Windows.GAUSSIAN,
         w: float = 1 / 3,
 )-> np.ndarray:
-    """Aply frequency filtering using logarithmic windows centered at specified grid points."""
+    """Apply frequency filtering using logarithmic windows centered at specified grid points."""
     grid_Pxx = np.zeros_like(grid)
     df = f[1]
     for i, fc in enumerate(grid):
         win, si, ei = log_window(window, fc, df, w)
-        ei = min(ei, len(f))
-        if si < ei:
-            grid_Pxx[i] = np.average(Pxx[si:ei], axis=-1, weights=win[: ei - si])
+        clipped = _clip_window_to_data(si, ei, len(f))
+        if clipped is not None:
+            data_start, data_end, weight_start, weight_end = clipped
+            weights = win[weight_start:weight_end]
+            grid_Pxx[i] = np.average(
+                Pxx[data_start:data_end], axis=-1, weights=weights
+            )
     return grid_Pxx
 
 

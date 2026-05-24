@@ -1,3 +1,8 @@
+"""Convenience FFT helpers.
+
+Currently used by sandbox experiments; the GUI path uses utils.analyzer directly.
+"""
+
 from scipy.signal import periodogram, welch
 import numpy as np
 from utils.windows import Windows, log_filter2, grid_filter
@@ -51,7 +56,7 @@ def grid_periodogram(
     f, Pxx = periodogram(
         x, fs, window, return_onesided=True, scaling=scaling, axis=axis
     )
-    return grid_filter(f, Pxx, out_f, log_window_func, log_window_width)
+    return out_f, grid_filter(f, Pxx, out_f, log_window_func, log_window_width)
 
 
 def grid_welch(
@@ -68,4 +73,4 @@ def grid_welch(
     f, Pxx = welch(
         x, fs, window, nperseg, return_onesided=True, scaling=scaling, axis=axis
     )
-    return grid_filter(f, Pxx, out_f, log_window_func, log_window_width)
+    return out_f, grid_filter(f, Pxx, out_f, log_window_func, log_window_width)

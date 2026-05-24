@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any
+
 
 class ListableEnum(Enum):
     @classmethod
@@ -20,7 +20,7 @@ class RefMode(ListableEnum):
 
 class AnalyzerMode(ListableEnum):
     WELCH = "welch"
-    PERIODIOGRAM = "periodiogram"
+    PERIODIOGRAM = "periodogram"
 
 
 class WeightingMode(ListableEnum):
