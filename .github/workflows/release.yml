@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  APP_NAME: BM_Spectrum_${{ github.ref_name }}
+
 jobs:
   build:
     name: Build ${{ matrix.os }}
@@ -17,11 +20,9 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: BM_Spectrum_v0.2_windows
-            package: BM_Spectrum_v0.2_windows.zip
+            suffix: windows
           - os: macos-latest
-            artifact: BM_Spectrum_v0.2_macos
-            package: BM_Spectrum_v0.2_macos.zip
+            suffix: macos
 
     steps:
       - uses: actions/checkout@v4
@@ -41,16 +42,16 @@ jobs:
       - name: Package Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist/BM_Spectrum_v0.2.exe -DestinationPath ${{ matrix.package }}
+        run: Compress-Archive -Path "dist/${env:APP_NAME}.exe" -DestinationPath "${env:APP_NAME}_${{ matrix.suffix }}.zip"
 
       - name: Package macOS binary
         if: runner.os == 'macOS'
-        run: ditto -c -k --sequesterRsrc --keepParent dist/BM_Spectrum_v0.2 ${{ matrix.package }}
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/${APP_NAME}" "${APP_NAME}_${{ matrix.suffix }}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.package }}
+          name: ${{ env.APP_NAME }}_${{ matrix.suffix }}
+          path: ${{ env.APP_NAME }}_${{ matrix.suffix }}.zip
 
   publish:
     name: Publish GitHub release
@@ -64,6 +65,6 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          name: BM Spectrum v0.2
+          name: BM Spectrum ${{ github.ref_name }}
           files: release-assets/*.zip
           generate_release_notes: true
