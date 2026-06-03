@@ -8,11 +8,22 @@ v0.2
 + Implement project settings saving/loading (with all graphs, records, and settings) - done
 
 v0.2.1
-- Saving analyzer and filtering parameters in record, update fields on changing current record
-- Implement saving and loading projects with all records, graphs, and settings
++ Saving analyzer and filtering parameters in record, update fields on changing current record
++ Implement saving and loading projects with all records, graphs, and settings
+
+v0.2.2
++ Fix exception on device disconnection
+
+v0.2.3
 - Fix pink noise generator clicking
+- Saving input/output settings on app restart
+- Buffer size selection in settings
+- Update timeplot on record import
 
 v0.3
 - Implement multi-record mode with averaging
-- Update timeplot on record import
 - Implement THD calculation and display using Farina's method
+
+v0.4
+- Implement real-time analyzer mode
+- Implement impedance measurement mode
