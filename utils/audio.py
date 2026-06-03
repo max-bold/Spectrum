@@ -16,7 +16,7 @@ from time import sleep
 from typing import Literal, NamedTuple
 
 from .generators import log_sweep, pink_noise
-from .classes import GenMode, RefMode
+from spectrum_app.models import GenMode, RefMode
 
 # Platform detection for Windows-specific functionality
 WIN32 = sys.platform == "win32"
@@ -130,16 +130,24 @@ class io_list_updater(Thread):
         """
         # Get host API names for reference
         hostapi_names = []
-        for hostapi in sd.query_hostapis():
+        try:
+            hostapis = sd.query_hostapis()
+            device_infos = sd.query_devices()
+        except (sd.PortAudioError, ValueError):
+            return []
+        for hostapi in hostapis:
             if isinstance(hostapi, dict):
                 hostapi_names.append(hostapi["name"])
 
         devices = []
-        for device_info in sd.query_devices():
+        for device_info in device_infos:
             if isinstance(device_info, dict):
                 device_index = device_info["index"]
                 device_name = device_info["name"]
-                host_api = hostapi_names[device_info["hostapi"]]
+                host_api_index = device_info["hostapi"]
+                if host_api_index >= len(hostapi_names):
+                    continue
+                host_api = hostapi_names[host_api_index]
 
                 input_channels = device_info["max_input_channels"]
                 output_channels = device_info["max_output_channels"]
@@ -163,6 +171,7 @@ class io_list_updater(Thread):
         return devices
 
     @staticmethod
+    #unused
     def get_device_indx(name: str) -> int:
         """Extract device index from formatted device name.
 
@@ -262,7 +271,7 @@ class InputMeter(Thread):
                     with self.level_lock:
                         self.level = peak_levels[:2].copy()
 
-            except sd.PortAudioError as e:
+            except (sd.PortAudioError, ValueError) as e:
                 # Handle audio system errors
                 self.enable.clear()
                 print(f"InputMeter PortAudio error: {e}")
@@ -390,12 +399,18 @@ class AudioIO(Thread):
             while not self.exit.is_set():
                 # Wait for signal to start measurement
                 self.running.wait()
+                if self.exit.is_set():
+                    break
 
-                # Reset completion flags
-                self.in_stop.clear()
-                self.out_stop.clear()
+                input_stream = None
+                output_stream = None
+                cycle_completed = False
 
-                if not self.exit.is_set():
+                try:
+                    # Reset completion flags
+                    self.in_stop.clear()
+                    self.out_stop.clear()
+
                     # Query device capabilities and set sample rates
                     self._setup_device_parameters()
 
@@ -415,19 +430,17 @@ class AudioIO(Thread):
                     # Wait for both streams to complete
                     self.out_stop.wait()
                     self.in_stop.wait()
+                    cycle_completed = True
 
-                    # Clean up streams
-                    input_stream.stop()
-                    output_stream.stop()
-                    input_stream.close()
-                    output_stream.close()
+                except Exception as e:
+                    print(f"AudioIO exception: {e}")
+                finally:
+                    self._close_stream(input_stream)
+                    self._close_stream(output_stream)
+                    self.running.clear()
+                    if cycle_completed:
+                        self.record_completed.set()
 
-                # Signal completion and reset state
-                self.running.clear()
-                self.record_completed.set()
-
-        except Exception as e:
-            print(f"AudioIO exception: {e}")
         finally:
             # Clean up COM initialization
             if WIN32:
@@ -437,14 +450,27 @@ class AudioIO(Thread):
     def _setup_device_parameters(self) -> None:
         """Query device capabilities and set sampling rates."""
         # Get input device sample rate
-        input_info = sd.query_devices(self.device[0])
+        input_info = sd.query_devices(self.device[0], "input")
         if isinstance(input_info, dict):
             self.in_fs = input_info["default_samplerate"]
 
         # Get output device sample rate
-        output_info = sd.query_devices(self.device[1])
+        output_info = sd.query_devices(self.device[1], "output")
         if isinstance(output_info, dict):
             self.out_fs = output_info["default_samplerate"]
+
+    @staticmethod
+    def _close_stream(stream) -> None:
+        if stream is None:
+            return
+        try:
+            stream.stop()
+        except Exception:
+            pass
+        try:
+            stream.close()
+        except Exception:
+            pass
 
     def _create_input_stream(self) -> sd.InputStream:
         """Create and configure the input audio stream.
@@ -676,6 +702,7 @@ class AudioIO(Thread):
         self.in_stop.set()
         self.out_stop.set()
 
+    #unused
     def run_once(self) -> None:
         """Execute a single measurement cycle.
 

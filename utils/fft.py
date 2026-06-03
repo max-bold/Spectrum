@@ -8,6 +8,7 @@ import numpy as np
 from utils.windows import Windows, log_filter2, grid_filter
 
 
+#unused
 def log_periodogram(
     x: np.ndarray,
     fs: float,
@@ -25,6 +26,7 @@ def log_periodogram(
     return log_filter2(f, Pxx, band, log_window_func, log_window_width, n_output)
 
 
+#unused
 def log_welch(
     x: np.ndarray,
     fs: float,
@@ -43,6 +45,7 @@ def log_welch(
     return log_filter2(f, Pxx, band, log_window_func, log_window_width, n_output)
 
 
+#unused
 def grid_periodogram(
     x: np.ndarray,
     fs: float,
@@ -59,6 +62,7 @@ def grid_periodogram(
     return out_f, grid_filter(f, Pxx, out_f, log_window_func, log_window_width)
 
 
+#unused
 def grid_welch(
     x: np.ndarray,
     fs: float,

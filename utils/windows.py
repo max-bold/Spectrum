@@ -1,5 +1,5 @@
 import numpy as np
-from .classes import ListableEnum
+from spectrum_app.models import ListableEnum
 
 
 class Windows(ListableEnum):
@@ -200,6 +200,7 @@ def log_filter(
     return output_frequencies, np.array(filtered_magnitudes)
 
 
+#unused
 def log_filter2(
     f: np.ndarray,
     Pxx: np.ndarray,
@@ -222,6 +223,7 @@ def log_filter2(
             )
     return log_f, log_Pxx
 
+#unused
 def grid_filter(
         f:np.ndarray,
         Pxx:np.ndarray,

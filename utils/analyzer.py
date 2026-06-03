@@ -7,7 +7,7 @@ various algorithms like periodogram and Welch's method.
 import numpy as np
 from threading import Thread, Event
 from scipy.signal import welch, periodogram
-from .classes import RefMode, AnalyzerMode, WeightingMode
+from spectrum_app.models import RefMode, AnalyzerMode, WeightingMode
 from .windows import log_filter, Windows
 
 

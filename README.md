@@ -34,7 +34,7 @@ A real-time audio spectrum analyzer built with Python and Dear PyGui, designed f
 To start the spectrum analyzer, run:
 
 ```bash
-py gui.py
+py run.py
 ```
 
 ### Main Interface
@@ -52,9 +52,13 @@ The application features a dual-pane interface:
 
 ## Project Structure
 
-- `gui.py` - Main application interface
-- `cbs.py` - Core callback functions and audio processing
-- `utils/` - Utility modules for audio processing, analysis, and UI themes
+- `run.py` - Application entrypoint
+- `spectrum_app/gui.py` - Dear PyGui interface construction
+- `spectrum_app/models.py` - Application enums and shared model types
+- `spectrum_app/themes.py` - Dear PyGui themes
+- `spectrum_app/cbs.py` - Compatibility facade for callbacks and app state
+- `spectrum_app/` - Application state, callbacks, file I/O, analysis orchestration, and UI sync logic
+- `utils/` - Utility modules for audio processing and DSP
 - `sandbox/` - Development and testing scripts
 - `info/` - Documentation and reference materials
 

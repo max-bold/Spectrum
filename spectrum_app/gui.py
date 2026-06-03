@@ -1,34 +1,11 @@
-from dataclasses import dataclass
-from time import monotonic
-
 import dearpygui.dearpygui as dpg
 
-import cbs
-
-
-REC_NUMBER = 5
-
-
-@dataclass
-class UiRefs:
-    run_btn: int | str
-    band_input: int | str
-    rec_len: int | str
-    mon_cb: int | str
-    left_level: int | str
-    right_level: int | str
-    inputs_combo: int | str
-    outputs_combo: int | str
-    ref_combo: int | str
-    welch_n_input: int | str
-    window_width_input: int | str
-    freq_length_input: int | str
-    levels_xaxis: int | str
-    last_io_update: float = 0.0
+from . import cbs
+from .ui.refs import REC_NUMBER, UiRefs
 
 
 def build_ui(state: cbs.AppState) -> UiRefs:
-    from utils.themes import green_theme
+    from .themes import green_theme
 
     with dpg.window(tag="Primary Window"):
         fft_dialog = dpg.add_file_dialog(
@@ -307,63 +284,3 @@ def build_ui(state: cbs.AppState) -> UiRefs:
     )
 
 
-def sync_io_lists(state: cbs.AppState, refs: UiRefs) -> None:
-    now = monotonic()
-    if now - refs.last_io_update >= 0.5:
-        cbs.upd_io(state, refs.inputs_combo, refs.outputs_combo)
-        cbs.sync_reference_options(state, refs.ref_combo)
-        cbs.sync_band_limits(state, refs.band_input)
-        cbs.sync_welch_limit(state, refs.welch_n_input)
-        refs.last_io_update = now
-
-
-def sync_run_button(state: cbs.AppState, refs: UiRefs) -> None:
-    from utils.themes import green_theme, red_theme
-
-    if state.audio_io.running.is_set() or state.pending_audio_start:
-        dpg.set_item_label(refs.run_btn, "ON")
-        dpg.bind_item_theme(refs.run_btn, red_theme)
-    else:
-        dpg.set_item_label(refs.run_btn, "OFF")
-        dpg.bind_item_theme(refs.run_btn, green_theme)
-
-
-def sync_ui(state: cbs.AppState, refs: UiRefs) -> None:
-    sync_io_lists(state, refs)
-
-    if dpg.get_value(refs.mon_cb):
-        cbs.upd_level_monitor(state, (refs.left_level, refs.right_level))
-
-    sync_run_button(state, refs)
-    cbs.process_pending_requests(state)
-    cbs.reenable_io_udater(state)
-
-    max_t = dpg.get_value(refs.rec_len) + 2
-    dpg.set_axis_limits(refs.levels_xaxis, 0, max_t)
-    cbs.run_analyzer(state)
-    dpg.set_value(refs.mon_cb, state.meter.enable.is_set() or state.pending_meter_start)
-
-
-def main() -> None:
-    dpg.create_context()
-    state = cbs.create_app_state()
-    refs = build_ui(state)
-    cbs.bind_input_commit_handlers(state, refs)
-    state.start_services()
-
-    dpg.create_viewport(title="BM Spectrum", width=1024, height=768)
-    dpg.setup_dearpygui()
-    dpg.show_viewport()
-    dpg.set_primary_window("Primary Window", True)
-
-    try:
-        while dpg.is_dearpygui_running():
-            sync_ui(state, refs)
-            dpg.render_dearpygui_frame()
-    finally:
-        state.stop_services()
-        dpg.destroy_context()
-
-
-if __name__ == "__main__":
-    main()
