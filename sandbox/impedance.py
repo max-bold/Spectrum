@@ -79,12 +79,15 @@ def play_and_record(
     output_device: int | str | None = None,
     input_channels: int = 2,
     output_channels: int = 2,
+    block_size: int = 1024,
 ) -> np.ndarray:
     """Play a chirp and synchronously record input channels."""
     if input_channels < 2:
         raise ValueError("input_channels must be at least 2")
     if output_channels not in (1, 2):
         raise ValueError("output_channels must be 1 or 2")
+    if block_size <= 0:
+        raise ValueError("block_size must be positive")
 
     mono = np.asarray(signal, dtype=np.float32)
     if mono.ndim != 1:
@@ -101,6 +104,7 @@ def play_and_record(
         channels=input_channels,
         dtype="float32",
         device=(input_device, output_device),
+        blocksize=block_size,
         blocking=True,
     )
     return np.asarray(recording, dtype=np.float32)
@@ -302,6 +306,7 @@ def measure_impedance_with_inline_calibration(
     output_device: int | str | None = None,
     input_channels: int = 2,
     output_channels: int = 2,
+    block_size: int = 1024,
     f_min: float | None = None,
     f_max: float | None = None,
     smoothing: bool = True,
@@ -325,6 +330,7 @@ def measure_impedance_with_inline_calibration(
         output_device=output_device,
         input_channels=input_channels,
         output_channels=output_channels,
+        block_size=block_size,
     )
     cal_recording = trim_recording(cal_recording, chirp_samples)
     analyze_recording_levels(cal_recording, raise_on_clipping=raise_on_clipping)
@@ -347,6 +353,7 @@ def measure_impedance_with_inline_calibration(
         output_device=output_device,
         input_channels=input_channels,
         output_channels=output_channels,
+        block_size=block_size,
     )
     measurement_recording = trim_recording(measurement_recording, chirp_samples)
     analyze_recording_levels(
@@ -527,6 +534,7 @@ def main() -> None:
 
     input_channels = 2
     output_channels = 2
+    block_size = 1024
 
     f_min = 20.0
     f_max = 20000.0
@@ -546,6 +554,7 @@ def main() -> None:
         output_device=output_device,
         input_channels=input_channels,
         output_channels=output_channels,
+        block_size=block_size,
         f_min=f_min,
         f_max=f_max,
         smoothing=smoothing,
