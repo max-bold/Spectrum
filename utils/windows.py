@@ -1,8 +1,9 @@
+from enum import Enum
+
 import numpy as np
-from spectrum_app.models import ListableEnum
 
 
-class Windows(ListableEnum):
+class Windows(Enum):
     """Enumeration of available window functions for frequency domain filtering.
 
     Available window types:
@@ -16,6 +17,10 @@ class Windows(ListableEnum):
     COSINE = "cosine"
     GAUSSIAN = "gaussian"
     TRIANGULAR = "triangular"
+
+    @classmethod
+    def list(cls) -> list[str]:
+        return list(str(value.value) for value in cls)
 
 
 def log_window(
@@ -200,8 +205,7 @@ def log_filter(
     return output_frequencies, np.array(filtered_magnitudes)
 
 
-#unused
-def log_filter2(
+def _log_filter2_real(
     f: np.ndarray,
     Pxx: np.ndarray,
     band: tuple[float, float] = (20, 20000),
@@ -223,16 +227,34 @@ def log_filter2(
             )
     return log_f, log_Pxx
 
+
 #unused
-def grid_filter(
+def log_filter2(
+    f: np.ndarray,
+    Pxx: np.ndarray,
+    band: tuple[float, float] = (20, 20000),
+    window: Windows = Windows.GAUSSIAN,
+    w: float = 1 / 3,
+    n_output: int = 256,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply logarithmic smoothing without discarding complex phase data."""
+    if np.iscomplexobj(Pxx):
+        log_f, real_part = _log_filter2_real(
+            f, np.real(Pxx), band, window, w, n_output
+        )
+        _, imag_part = _log_filter2_real(f, np.imag(Pxx), band, window, w, n_output)
+        return log_f, real_part + 1j * imag_part
+
+    return _log_filter2_real(f, Pxx, band, window, w, n_output)
+
+def _grid_filter_real(
         f:np.ndarray,
         Pxx:np.ndarray,
         grid:np.ndarray,
         window: Windows = Windows.GAUSSIAN,
         w: float = 1 / 3,
 )-> np.ndarray:
-    """Apply frequency filtering using logarithmic windows centered at specified grid points."""
-    grid_Pxx = np.zeros_like(grid)
+    grid_Pxx = np.zeros_like(grid, dtype=np.result_type(grid, Pxx, float))
     df = f[1]
     for i, fc in enumerate(grid):
         win, si, ei = log_window(window, fc, df, w)
@@ -246,5 +268,34 @@ def grid_filter(
     return grid_Pxx
 
 
+def grid_filter(
+        f:np.ndarray,
+        Pxx:np.ndarray,
+        grid:np.ndarray,
+        window: Windows = Windows.GAUSSIAN,
+        w: float = 1 / 3,
+)-> np.ndarray:
+    """Apply frequency filtering using logarithmic windows centered at grid points."""
+    if np.iscomplexobj(Pxx):
+        real_part = _grid_filter_real(f, np.real(Pxx), grid, window, w)
+        imag_part = _grid_filter_real(f, np.imag(Pxx), grid, window, w)
+        return real_part + 1j * imag_part
+
+    return _grid_filter_real(f, Pxx, grid, window, w)
+
+
+def _test_complex_filter_support() -> None:
+    f = np.linspace(0.0, 1000.0, 513)
+    x = np.linspace(1.0, 2.0, 513) + 1j * np.linspace(-1.0, 1.0, 513)
+    _, y = log_filter2(f, x, band=(20.0, 900.0), n_output=32)
+    grid_y = grid_filter(f, x, np.geomspace(20.0, 900.0, 32))
+    assert np.iscomplexobj(y)
+    assert np.iscomplexobj(grid_y)
+
+
+def _test_log_filter2_complex_support() -> None:
+    _test_complex_filter_support()
+
+
 if __name__ == "__main__":
-    pass
+    _test_complex_filter_support()
