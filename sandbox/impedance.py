@@ -23,6 +23,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import sounddevice as sd
+from matplotlib.ticker import ScalarFormatter
 from scipy.signal import chirp
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -80,18 +81,25 @@ def play_and_record(
     input_channels: int = 2,
     output_channels: int = 2,
     block_size: int = 1024,
+    recording_tail: float = 0.25,
 ) -> np.ndarray:
-    """Play a chirp and synchronously record input channels."""
+    """Play a chirp and record it with trailing silence for latency alignment."""
     if input_channels < 2:
         raise ValueError("input_channels must be at least 2")
     if output_channels not in (1, 2):
         raise ValueError("output_channels must be 1 or 2")
     if block_size <= 0:
         raise ValueError("block_size must be positive")
+    if recording_tail < 0.0:
+        raise ValueError("recording_tail must be non-negative")
 
     mono = np.asarray(signal, dtype=np.float32)
     if mono.ndim != 1:
         raise ValueError("signal must be a mono 1-D array")
+
+    tail_samples = int(round(recording_tail * fs))
+    if tail_samples:
+        mono = np.pad(mono, (0, tail_samples))
 
     if output_channels == 1:
         playback = mono
@@ -145,7 +153,8 @@ def trim_recording(
     trimmed = data[start : start + chirp_samples]
     if len(trimmed) < chirp_samples:
         warnings.warn(
-            "Recording is shorter than chirp length, padding with zeros",
+            "Aligned recording is shorter than chirp length; "
+            "increase recording_tail. Padding with zeros",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -209,10 +218,11 @@ def calculate_fft_spectra(
 
     x1 = x1[:n] - np.mean(x1[:n])
     x2 = x2[:n] - np.mean(x2[:n])
-    window = np.hanning(n)
 
-    V1 = np.fft.rfft(x1 * window)
-    V2 = np.fft.rfft(x2 * window)
+    # The excitation already has short fades. A full Hann window would attenuate
+    # most of the logarithmic sweep near both frequency-range boundaries.
+    V1 = np.fft.rfft(x1)
+    V2 = np.fft.rfft(x2)
     freq = np.fft.rfftfreq(n, d=1.0 / fs)
     return freq, V1, V2
 
@@ -227,6 +237,7 @@ def calculate_calibration_from_known_resistor(
     f_max: float | None = None,
     smoothing: bool = True,
     eps: float = 1e-12,
+    filter_window_width: float = 1 / 3,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Calculate complex channel calibration from a known load resistor."""
     if reference_resistor <= 0:
@@ -235,11 +246,17 @@ def calculate_calibration_from_known_resistor(
         raise ValueError("calibration_resistor must be positive")
 
     freq, V1_cal, V2_cal = calculate_fft_spectra(ch1_cal, ch2_cal, fs)
-    freq, V1_cal, V2_cal = _maybe_smooth_spectra(
-        freq, V1_cal, V2_cal, f_min, f_max, smoothing
+    freq, H_measured_cal = _calculate_transfer_function(
+        freq,
+        V1_cal,
+        V2_cal,
+        f_min,
+        f_max,
+        smoothing,
+        filter_window_width,
+        eps,
     )
 
-    H_measured_cal = V2_cal / _safe_denominator(V1_cal, eps)
     H_expected = calibration_resistor / (reference_resistor + calibration_resistor)
     calibration = H_measured_cal / H_expected
     calibration = calibration.astype(np.complex128, copy=False)
@@ -259,15 +276,24 @@ def calculate_impedance(
     f_max: float | None = None,
     smoothing: bool = True,
     eps: float = 1e-12,
+    filter_window_width: float = 1 / 3,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Calculate complex load impedance from CH1 and CH2 recordings."""
     if reference_resistor <= 0:
         raise ValueError("reference_resistor must be positive")
 
     freq, V1, V2 = calculate_fft_spectra(ch1, ch2, fs)
-    freq, V1, V2 = _maybe_smooth_spectra(freq, V1, V2, f_min, f_max, smoothing)
+    freq, H_measured = _calculate_transfer_function(
+        freq,
+        V1,
+        V2,
+        f_min,
+        f_max,
+        smoothing,
+        filter_window_width,
+        eps,
+    )
 
-    H_measured = V2 / _safe_denominator(V1, eps)
     range_already_applied = False
     if calibration is None:
         H_corrected = H_measured
@@ -311,8 +337,23 @@ def measure_impedance_with_inline_calibration(
     f_max: float | None = None,
     smoothing: bool = True,
     raise_on_clipping: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Run calibration immediately before measuring the unknown load."""
+    filter_window_width: float = 1 / 3,
+    recording_tail: float = 0.25,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Calibrate once, then measure any number of unknown loads."""
+    if smoothing and f_min is not None and f_max is not None:
+        half_window = filter_window_width / 2
+        required_start = f_min / (2**half_window)
+        required_end = f_max * (2**half_window)
+        if f_start > required_start or f_end < required_end:
+            warnings.warn(
+                "The chirp does not cover the full smoothing windows at the "
+                "analysis boundaries; extend f_start/f_end or reduce "
+                "filter_window_width",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
     test_signal = generate_chirp(
         fs=fs,
         duration=duration,
@@ -331,6 +372,7 @@ def measure_impedance_with_inline_calibration(
         input_channels=input_channels,
         output_channels=output_channels,
         block_size=block_size,
+        recording_tail=recording_tail,
     )
     cal_recording = trim_recording(cal_recording, chirp_samples)
     analyze_recording_levels(cal_recording, raise_on_clipping=raise_on_clipping)
@@ -343,33 +385,61 @@ def measure_impedance_with_inline_calibration(
         f_min=f_min,
         f_max=f_max,
         smoothing=smoothing,
+        filter_window_width=filter_window_width,
     )
 
-    input("Connect the unknown load Rl, then press Enter...")
-    measurement_recording = play_and_record(
-        test_signal,
-        fs,
-        input_device=input_device,
-        output_device=output_device,
-        input_channels=input_channels,
-        output_channels=output_channels,
-        block_size=block_size,
-    )
-    measurement_recording = trim_recording(measurement_recording, chirp_samples)
-    analyze_recording_levels(
-        measurement_recording,
-        raise_on_clipping=raise_on_clipping,
-    )
-    return calculate_impedance(
-        measurement_recording[:, 0],
-        measurement_recording[:, 1],
-        fs=fs,
-        reference_resistor=reference_resistor,
-        calibration=calibration,
-        f_min=f_min,
-        f_max=f_max,
-        smoothing=smoothing,
-    )
+    measurements: list[tuple[np.ndarray, np.ndarray]] = []
+    while True:
+        measurement_number = len(measurements) + 1
+        command = input(
+            f"Connect unknown load for measurement {measurement_number}. "
+            "Press Enter to measure or type q to finish: "
+        ).strip().lower()
+        if command == "q":
+            break
+
+        measurement_recording = play_and_record(
+            test_signal,
+            fs,
+            input_device=input_device,
+            output_device=output_device,
+            input_channels=input_channels,
+            output_channels=output_channels,
+            block_size=block_size,
+            recording_tail=recording_tail,
+        )
+        measurement_recording = trim_recording(
+            measurement_recording,
+            chirp_samples,
+        )
+        analyze_recording_levels(
+            measurement_recording,
+            raise_on_clipping=raise_on_clipping,
+        )
+        measurement = calculate_impedance(
+            measurement_recording[:, 0],
+            measurement_recording[:, 1],
+            fs=fs,
+            reference_resistor=reference_resistor,
+            calibration=calibration,
+            f_min=f_min,
+            f_max=f_max,
+            smoothing=smoothing,
+            filter_window_width=filter_window_width,
+        )
+        measurements.append(measurement)
+
+        freq, impedance = measurement
+        _, ax = plot_impedance_magnitude(freq, impedance)
+        ax.set_title(
+            f"Load impedance and current phase, measurement {measurement_number}"
+        )
+        plt.show(block=False)
+        plt.pause(0.1)
+
+        print(f"Measurement {measurement_number} completed.")
+
+    return measurements
 
 
 def plot_impedance_magnitude(
@@ -377,17 +447,47 @@ def plot_impedance_magnitude(
     impedance: np.ndarray,
     log_x: bool = True,
 ) -> tuple[plt.Figure, plt.Axes]:
-    """Plot only impedance magnitude."""
+    """Plot impedance magnitude and current phase relative to voltage."""
     fig, ax = plt.subplots()
+    current_phase = -np.angle(impedance, deg=True)
+
     if log_x:
-        ax.semilogx(freq, np.abs(impedance))
+        magnitude_line = ax.semilogx(
+            freq,
+            np.abs(impedance),
+            label="|Z|",
+        )[0]
     else:
-        ax.plot(freq, np.abs(impedance))
+        magnitude_line = ax.plot(
+            freq,
+            np.abs(impedance),
+            label="|Z|",
+        )[0]
 
     ax.set_xlabel("Frequency, Hz")
     ax.set_ylabel("|Z|, Ohm")
-    ax.set_title("Load impedance magnitude")
+    ax.set_title("Load impedance magnitude and current phase")
     ax.grid(True, which="both")
+    y_formatter = ScalarFormatter(useOffset=False)
+    y_formatter.set_scientific(False)
+    ax.yaxis.set_major_formatter(y_formatter)
+
+    phase_ax = ax.twinx()
+    phase_line = phase_ax.plot(
+        freq,
+        current_phase,
+        color="tab:red",
+        linestyle="--",
+        label="Current phase",
+    )[0]
+    phase_ax.axhline(0.0, color="tab:red", linewidth=0.8, alpha=0.35)
+    phase_ax.set_ylabel("Current phase relative to voltage, deg", color="tab:red")
+    phase_ax.tick_params(axis="y", labelcolor="tab:red")
+    phase_formatter = ScalarFormatter(useOffset=False)
+    phase_formatter.set_scientific(False)
+    phase_ax.yaxis.set_major_formatter(phase_formatter)
+
+    ax.legend(handles=[magnitude_line, phase_line], loc="best")
     return fig, ax
 
 
@@ -430,33 +530,43 @@ def _log_frequency_grid(
     return np.geomspace(low, high, n_output)
 
 
-def _maybe_smooth_spectra(
+def _calculate_transfer_function(
     freq: np.ndarray,
     V1: np.ndarray,
     V2: np.ndarray,
     f_min: float | None,
     f_max: float | None,
     smoothing: bool,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    filter_window_width: float,
+    eps: float,
+) -> tuple[np.ndarray, np.ndarray]:
     if not smoothing:
-        return freq, V1, V2
+        return freq, V2 / _safe_denominator(V1, eps)
+    if filter_window_width <= 0.0:
+        raise ValueError("filter_window_width must be positive")
 
     log_freq = _log_frequency_grid(freq, f_min, f_max)
-    log_V1 = grid_filter(
+    cross_spectrum = np.conj(V1) * V2
+    input_power = np.abs(V1) ** 2
+    smoothed_cross_spectrum = grid_filter(
         freq,
-        V1,
+        cross_spectrum,
         log_freq,
         window=Windows.GAUSSIAN,
-        w=1 / 3,
+        w=filter_window_width,
     )
-    log_V2 = grid_filter(
+    smoothed_input_power = grid_filter(
         freq,
-        V2,
+        input_power,
         log_freq,
         window=Windows.GAUSSIAN,
-        w=1 / 3,
+        w=filter_window_width,
     )
-    return log_freq, log_V1, log_V2
+    transfer_function = smoothed_cross_spectrum / _safe_denominator(
+        smoothed_input_power,
+        eps,
+    )
+    return log_freq, transfer_function
 
 
 def _apply_frequency_range(
@@ -474,6 +584,22 @@ def _apply_frequency_range(
 
 
 def _self_test() -> None:
+    test_freq = np.linspace(0.0, 24000.0, 24001)
+    common_phase = np.exp(1j * 0.003 * np.square(test_freq))
+    expected_h = 0.4 + 0.1j
+    transfer_freq, transfer = _calculate_transfer_function(
+        test_freq,
+        common_phase,
+        expected_h * common_phase,
+        f_min=20.0,
+        f_max=20000.0,
+        smoothing=True,
+        filter_window_width=0.9,
+        eps=1e-12,
+    )
+    assert transfer_freq.shape == transfer.shape
+    assert np.allclose(transfer, expected_h, rtol=1e-10, atol=1e-10)
+
     fs = 48000
     t = np.arange(fs, dtype=np.float64) / fs
     ch1 = np.sin(2.0 * np.pi * 1000.0 * t)
@@ -520,17 +646,17 @@ def _self_test() -> None:
 
 
 def main() -> None:
-    fs = 48000
-    duration = 5.0
-    f_start = 20.0
-    f_end = 20000.0
-    amplitude = 0.2
+    fs = 192000
+    duration = 10.0
+    f_start = 10.0
+    f_end = 30000.0
+    amplitude = 0.9
 
-    reference_resistor = 10.0
-    calibration_resistor = 8.2
+    reference_resistor = 3.25
+    calibration_resistor = 10.4
 
-    input_device = None
-    output_device = None
+    input_device = 25
+    output_device = 22
 
     input_channels = 2
     output_channels = 2
@@ -540,9 +666,12 @@ def main() -> None:
     f_max = 20000.0
 
     smoothing = True
+    filter_window_width = 0.33
+    recording_tail = 0.25
+
     raise_on_clipping = True
 
-    freq, impedance = measure_impedance_with_inline_calibration(
+    measurements = measure_impedance_with_inline_calibration(
         fs=fs,
         duration=duration,
         reference_resistor=reference_resistor,
@@ -559,10 +688,12 @@ def main() -> None:
         f_max=f_max,
         smoothing=smoothing,
         raise_on_clipping=raise_on_clipping,
+        filter_window_width=filter_window_width,
+        recording_tail=recording_tail,
     )
 
-    plot_impedance_magnitude(freq, impedance)
-    plt.show()
+    if measurements:
+        plt.show()
 
 
 if __name__ == "__main__":
