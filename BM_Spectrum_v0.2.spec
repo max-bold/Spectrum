@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+
+app_name = os.environ.get("APP_NAME", "BM_Spectrum_v0.2.2")
+
 
 a = Analysis(
     ["run.py"],
@@ -22,7 +27,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BM_Spectrum_v0.2.2",
+    name=app_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
