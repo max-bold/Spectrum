@@ -214,8 +214,9 @@ def _log_filter2_real(
     n_output: int = 256,
 ) -> tuple[np.ndarray, np.ndarray]:
     log_f = np.geomspace(band[0], band[1], n_output)
-    log_Pxx = np.zeros_like(log_f)
-    df = f[1]
+    out_dtype = np.result_type(Pxx.dtype, np.float64)
+    log_Pxx = np.full(log_f.shape, np.nan, dtype=out_dtype)
+    df = f[1] - f[0]
     for i, fc in enumerate(log_f):
         win, si, ei = log_window(window, fc, df, w)
         clipped = _clip_window_to_data(si, ei, len(f))
@@ -228,7 +229,6 @@ def _log_filter2_real(
     return log_f, log_Pxx
 
 
-#unused
 def log_filter2(
     f: np.ndarray,
     Pxx: np.ndarray,
@@ -242,7 +242,9 @@ def log_filter2(
         log_f, real_part = _log_filter2_real(
             f, np.real(Pxx), band, window, w, n_output
         )
-        _, imag_part = _log_filter2_real(f, np.imag(Pxx), band, window, w, n_output)
+        _, imag_part = _log_filter2_real(
+            f, np.imag(Pxx), band, window, w, n_output
+        )
         return log_f, real_part + 1j * imag_part
 
     return _log_filter2_real(f, Pxx, band, window, w, n_output)
@@ -255,7 +257,7 @@ def _grid_filter_real(
         w: float = 1 / 3,
 )-> np.ndarray:
     grid_Pxx = np.zeros_like(grid, dtype=np.result_type(grid, Pxx, float))
-    df = f[1]
+    df = f[1] - f[0]
     for i, fc in enumerate(grid):
         win, si, ei = log_window(window, fc, df, w)
         clipped = _clip_window_to_data(si, ei, len(f))

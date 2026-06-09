@@ -165,7 +165,7 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                         with dpg.group(width=-1):
                             dpg.add_text("Input")
                             inputs_combo = dpg.add_combo(
-                                default_value="default input",
+                                default_value=state.settings.audio.input_device,
                                 callback=cbs.set_input,
                                 user_data=state,
                             )
@@ -180,7 +180,7 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                                     right_level = dpg.add_progress_bar(height=7)
                             dpg.add_text("Output")
                             outputs_combo = dpg.add_combo(
-                                default_value="default output",
+                                default_value=state.settings.audio.output_device,
                                 callback=cbs.set_output,
                                 user_data=state,
                             )

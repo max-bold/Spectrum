@@ -15,6 +15,7 @@ from .analysis import (
     sync_welch_limit,
 )
 from .state import AppState
+from .settings import DEFAULT_INPUT, DEFAULT_OUTPUT, resolve_device
 
 
 def run_btn(sender=None, app_data=None, user_data: AppState | None = None):
@@ -98,25 +99,33 @@ def sync_selected_audio_devices(
     inputs: list[str],
     outputs: list[str],
 ) -> None:
-    input_device, output_device = state.audio_io.device
-    selected_input = dpg.get_value(inputs_combo)
-    selected_output = dpg.get_value(outputs_combo)
-
-    if not selected_device_is_available(input_device, selected_input, inputs, "default input"):
-        input_device = None
+    available_inputs = inputs[1:]
+    available_outputs = outputs[1:]
+    input_name, input_device = resolve_device(
+        state.settings.audio.input_device,
+        available_inputs,
+        DEFAULT_INPUT,
+    )
+    output_name, output_device = resolve_device(
+        state.settings.audio.output_device,
+        available_outputs,
+        DEFAULT_OUTPUT,
+    )
+    changed = (
+        input_name != state.settings.audio.input_device
+        or output_name != state.settings.audio.output_device
+    )
+    if input_device is None:
         state.meter.device = None
-        dpg.set_value(inputs_combo, "default input")
-
-    if not selected_device_is_available(
-        output_device,
-        selected_output,
-        outputs,
-        "default output",
-    ):
-        output_device = None
-        dpg.set_value(outputs_combo, "default output")
-
+    else:
+        state.meter.device = input_device
+    state.settings.audio.input_device = input_name
+    state.settings.audio.output_device = output_name
     state.audio_io.device = (input_device, output_device)
+    dpg.set_value(inputs_combo, input_name)
+    dpg.set_value(outputs_combo, output_name)
+    if changed:
+        state.settings.save()
 
 
 def selected_device_is_available(
@@ -147,11 +156,15 @@ def set_input(s, name: str, state: AppState) -> None:
     idx = device_index_from_name(name)
     state.audio_io.device = (idx, state.audio_io.device[1])
     state.meter.device = idx
+    state.settings.audio.input_device = name or DEFAULT_INPUT
+    state.settings.save()
 
 
 def set_output(s, name: str, state: AppState) -> None:
     idx = device_index_from_name(name)
     state.audio_io.device = (state.audio_io.device[0], idx)
+    state.settings.audio.output_device = name or DEFAULT_OUTPUT
+    state.settings.save()
 
 
 def set_analyzer_mode(s, mode: str, state: AppState) -> None:

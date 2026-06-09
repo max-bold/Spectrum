@@ -10,7 +10,7 @@ def get_default_io() -> tuple[int, int]:
     return tuple(dev)
 
 print(sd.query_devices())
-def_in, def_out  = get_default_io()
+# def_in, def_out  = get_default_io()
 
-print(sd.query_devices(def_in))
-print(sd.query_devices(def_out))
+# print(sd.query_devices(def_in))
+# print(sd.query_devices(def_out))

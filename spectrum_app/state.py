@@ -7,6 +7,7 @@ import numpy as np
 
 from utils.analyzer import Analyzer
 from utils.audio import io_list_updater, InputMeter, AudioIO
+from .settings import AppSettings, load_settings, validate_audio_settings
 
 
 class Timer(Thread):
@@ -34,6 +35,7 @@ class Timer(Thread):
 
 @dataclass
 class AppState:
+    settings: AppSettings = field(default_factory=load_settings)
     analyzer: Analyzer = field(default_factory=Analyzer)
     meter: InputMeter = field(default_factory=InputMeter)
     io_upd: io_list_updater = field(default_factory=io_list_updater)
@@ -87,4 +89,15 @@ class AppState:
 
 
 def create_app_state() -> AppState:
-    return AppState()
+    settings = load_settings()
+    input_device, output_device = validate_audio_settings(settings)
+    state = AppState(
+        settings=settings,
+        meter=InputMeter(block_size=settings.audio.block_size),
+        audio_io=AudioIO(
+            device=(input_device, output_device),
+            block_size=settings.audio.block_size,
+        ),
+    )
+    state.meter.device = input_device
+    return state

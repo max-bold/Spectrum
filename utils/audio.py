@@ -59,7 +59,7 @@ class io_list_updater(Thread):
         paused (Event): Status event indicating if scanning is paused
     """
 
-    def __init__(self) -> None:
+    def __init__(self, block_size: int = 1024) -> None:
         """Initialize the audio device list updater."""
         # Device lists
         self.inputs_list: list[str] = []
@@ -227,6 +227,7 @@ class InputMeter(Thread):
         # Control and configuration
         self.enable = Event()
         self.device: int | None = None
+        self.block_size = max(1, int(block_size))
 
         super().__init__(daemon=True)
 
@@ -259,8 +260,7 @@ class InputMeter(Thread):
 
                 # Continuous level monitoring loop
                 while self.enable.is_set():
-                    # Read audio chunk (1024 samples)
-                    audio_chunk = stream.read(1024)[0]
+                    audio_chunk = stream.read(self.block_size)[0]
 
                     # Calculate peak levels for each channel
                     peak_levels: np.ndarray = np.max(np.abs(audio_chunk), axis=0)
@@ -326,6 +326,7 @@ class AudioIO(Thread):
         band: tuple[float, float] = (20, 20000),
         ref: RefMode = RefMode.CHANNEL_B,
         daemon: bool = False,
+        block_size: int = 1024,
     ) -> None:
         """Initialize the AudioIO system.
 
@@ -334,6 +335,8 @@ class AudioIO(Thread):
             device (tuple[int, int] | tuple[None, None], optional): Audio device indices
                 as (input_device, output_device). None uses system default.
                 Defaults to (None, None).
+            block_size (int, optional): Audio stream block size in samples.
+                Defaults to 1024.
             gen_mode (GenMode, optional): Signal generation mode.
                 Defaults to GenMode.LOG_SWEEP.
             band (tuple[float, float], optional): Frequency range for generated signals
@@ -345,6 +348,7 @@ class AudioIO(Thread):
         # Recording/playback configuration
         self.length = length
         self.device: tuple[int | None, int | None] = device
+        self.block_size = max(1, int(block_size))
         self.gen_mode: GenMode = gen_mode
         self.band = band
         self.ref: RefMode = ref
@@ -481,7 +485,7 @@ class AudioIO(Thread):
         input_stream = sd.InputStream(
             device=self.device[0],
             callback=self.input_callback,
-            blocksize=int(self.in_fs * 0.1),  # 100ms blocks
+            blocksize=self.block_size,
         )
 
         # Update actual sample rate from stream
@@ -507,7 +511,7 @@ class AudioIO(Thread):
         output_stream = sd.OutputStream(
             device=self.device[1],
             callback=self.output_callback,
-            blocksize=int(self.out_fs * 0.1),  # 100ms blocks
+            blocksize=self.block_size,
         )
 
         # Update actual sample rate from stream
