@@ -13,20 +13,151 @@ from spectrum_app.impedance.imp_measure import (
     ImpedanceAppState,
     MeasurementConfig,
     MeasurementState,
+    PhaseDisplayMode,
     calculate_channel_correction,
     calculate_impedance,
+    channel_calibration_frequencies,
+    current_phase_angle,
+    current_phase_derivative,
     estimate_reference_resistor,
     export_impedance_plot,
     fit_impedance,
+    generate_channel_calibration_signal,
     generate_measurement_signal,
+    impedance_axis_limits,
     play_and_record,
+    phase_plot_data,
     require_valid_reference_calibration,
     resolve_sample_rate,
     speaker_impedance,
+    validate_channel_similarity,
 )
 
 
 class ImpedanceMathTests(unittest.TestCase):
+    def test_impedance_axis_always_includes_zero(self) -> None:
+        lower, upper = impedance_axis_limits(
+            np.array([6.0, 8.0, 20.0, np.nan])
+        )
+        self.assertEqual(lower, 0.0)
+        self.assertAlmostEqual(upper, 21.0)
+
+    def test_current_phase_is_unwrapped(self) -> None:
+        expected = np.linspace(-270.0, 270.0, 128)
+        impedance = np.exp(-1j * np.deg2rad(expected))
+        phase = current_phase_angle(impedance)
+        np.testing.assert_allclose(
+            np.diff(phase),
+            np.diff(expected),
+            atol=1e-10,
+        )
+
+    def test_phase_derivative_uses_log_frequency(self) -> None:
+        frequency = np.geomspace(20.0, 20000.0, 256)
+        expected_derivative = 45.0
+        current_phase = 10.0 + expected_derivative * np.log10(frequency)
+        impedance = np.exp(-1j * np.deg2rad(current_phase))
+        derivative = current_phase_derivative(frequency, impedance)
+        np.testing.assert_allclose(
+            derivative[16:-16],
+            expected_derivative,
+            atol=1e-6,
+        )
+        displayed, label, series = phase_plot_data(
+            frequency,
+            impedance,
+            PhaseDisplayMode.DERIVATIVE,
+        )
+        np.testing.assert_allclose(displayed, derivative)
+        self.assertIn("deg/decade", label)
+        self.assertEqual(series, "Phase derivative")
+
+    def test_multitone_correction_recovers_gain_and_delay(self) -> None:
+        config = MeasurementConfig(
+            sample_rate=48000,
+            duration=1.0,
+            f_min=20.0,
+            f_max=20000.0,
+            points=128,
+        )
+        channel_1 = generate_channel_calibration_signal(config).astype(float)
+        delay_samples = 37
+        gain = 0.35
+        channel_2 = (
+            np.pad(channel_1[:-delay_samples], (delay_samples, 0)) * gain
+        )
+        frequency, correction = calculate_channel_correction(
+            channel_1,
+            channel_2,
+            config,
+        )
+        expected = gain * np.exp(
+            -2j
+            * np.pi
+            * frequency
+            * delay_samples
+            / config.sample_rate
+        )
+        np.testing.assert_allclose(correction, expected, rtol=1e-4, atol=1e-5)
+
+    def test_multitone_rejects_different_rms_profiles(self) -> None:
+        config = MeasurementConfig(
+            sample_rate=48000,
+            duration=1.0,
+            f_min=20.0,
+            f_max=20000.0,
+            points=128,
+        )
+        frequencies = channel_calibration_frequencies(config)
+        time = np.arange(config.sample_rate, dtype=float) / config.sample_rate
+        phases = (
+            np.pi
+            * np.arange(frequencies.size)
+            * (np.arange(frequencies.size) - 1)
+            / frequencies.size
+        )
+        channel_1 = np.sum(
+            np.cos(
+                2 * np.pi * frequencies[:, None] * time + phases[:, None]
+            ),
+            axis=0,
+        )
+        levels = np.geomspace(0.1, 2.0, frequencies.size)
+        channel_2 = np.sum(
+            levels[:, None]
+            * np.cos(
+                2 * np.pi * frequencies[:, None] * time + phases[:, None]
+            ),
+            axis=0,
+        )
+        channel_1 *= 0.5 / np.max(np.abs(channel_1))
+        channel_2 *= 0.5 / np.max(np.abs(channel_2))
+        with self.assertRaisesRegex(ValueError, "level profiles"):
+            calculate_channel_correction(channel_1, channel_2, config)
+
+    def test_channel_similarity_allows_gain_polarity_and_delay(self) -> None:
+        sample_rate = 48000
+        signal = np.random.default_rng(3).normal(0.0, 0.2, sample_rate)
+        delayed = np.pad(signal[:-37], (37, 0)) * -0.35
+        similarity = validate_channel_similarity(
+            signal,
+            delayed,
+            sample_rate,
+        )
+        self.assertGreater(similarity, 0.99)
+
+    def test_channel_similarity_rejects_different_signals(self) -> None:
+        sample_rate = 48000
+        generator = np.random.default_rng(4)
+        channel_1 = generator.normal(0.0, 0.2, sample_rate)
+        channel_2 = generator.normal(0.0, 0.2, sample_rate)
+        with self.assertRaisesRegex(ValueError, "contain different signals"):
+            validate_channel_similarity(
+                channel_1,
+                channel_2,
+                sample_rate,
+            )
+
     def test_log_filter_preserves_complex_components(self) -> None:
         frequency = np.linspace(0.0, 24000.0, 513)
         values = (
@@ -76,9 +207,10 @@ class ImpedanceMathTests(unittest.TestCase):
         generator = np.random.default_rng(1)
         channel_1 = generator.normal(0.0, 0.2, sample_rate)
         channel_gain = 0.8
+        channel_calibration = generate_channel_calibration_signal(config)
         _, channel_correction = calculate_channel_correction(
-            channel_1,
-            channel_1 * channel_gain,
+            channel_calibration,
+            channel_calibration * channel_gain,
             config,
         )
         calibration_ratio = calibration_resistor / (
@@ -119,9 +251,10 @@ class ImpedanceMathTests(unittest.TestCase):
             points=128,
         )
         signal = np.random.default_rng(2).normal(0.0, 0.2, 48000)
+        channel_calibration = generate_channel_calibration_signal(config)
         _, correction = calculate_channel_correction(
-            signal,
-            signal,
+            channel_calibration,
+            channel_calibration,
             config,
         )
         with self.assertWarns(RuntimeWarning):
@@ -449,6 +582,27 @@ class ImpedanceStateTests(unittest.TestCase):
         snapshot = state.snapshot()
         self.assertEqual(snapshot.state, MeasurementState.UNCALIBRATED)
         self.assertIn("resistor network is invalid", snapshot.error)
+
+    def test_different_first_stage_signals_fail_calibration(self) -> None:
+        generator = np.random.default_rng(5)
+
+        def recorder(signal, config, level_callback):
+            recording = np.column_stack(
+                (
+                    generator.normal(0.0, 0.2, len(signal)),
+                    generator.normal(0.0, 0.2, len(signal)),
+                )
+            ).astype(np.float32)
+            level_callback((0.5, 0.5))
+            return recording
+
+        state = ImpedanceAppState(recorder=recorder)
+        self.assertTrue(state.start_calibration(self.config))
+        state.wait(10)
+        snapshot = state.snapshot()
+        self.assertEqual(snapshot.state, MeasurementState.UNCALIBRATED)
+        self.assertEqual(snapshot.calibration_stage, CalibrationStage.IDLE)
+        self.assertIn("not the generated multitone signal", snapshot.error)
 
     def test_invalidating_calibration_clears_measurement(self) -> None:
         self.complete_calibration()

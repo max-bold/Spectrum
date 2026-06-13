@@ -21,9 +21,11 @@ if __package__:
         ImpedanceAppState,
         MeasurementConfig,
         MeasurementState,
+        PhaseDisplayMode,
         WindowFunction,
         export_impedance_plot,
-        impedance_plot_data,
+        impedance_axis_limits,
+        phase_plot_data,
         resolve_sample_rate,
     )
     from .spice_table import SPICE_SECTION_COUNT, SpiceModelTable
@@ -33,9 +35,11 @@ else:
         ImpedanceAppState,
         MeasurementConfig,
         MeasurementState,
+        PhaseDisplayMode,
         WindowFunction,
         export_impedance_plot,
-        impedance_plot_data,
+        impedance_axis_limits,
+        phase_plot_data,
         resolve_sample_rate,
     )
     from spice_table import SPICE_SECTION_COUNT, SpiceModelTable
@@ -63,6 +67,8 @@ class ImpedanceUi:
     calibration_continue_button: int | str
     calibration_cancel_button: int | str
     io_menu_item: int | str
+    phase_angle_menu_item: int | str
+    phase_derivative_menu_item: int | str
     io_dialog: int | str
     input_combo: int | str
     output_combo: int | str
@@ -70,6 +76,7 @@ class ImpedanceUi:
     close_io_button: int | str
     capture_settings: tuple[int | str, ...]
     filter_settings: tuple[int | str, ...]
+    phase_mode: PhaseDisplayMode = PhaseDisplayMode.ANGLE
     revision: int = -1
     last_io_update: float = 0.0
 
@@ -104,6 +111,16 @@ def bind_ui(ui: ImpedanceUi, export_dialog: int | str) -> None:
         ui.io_menu_item,
         callback=show_io_settings,
         user_data=ui,
+    )
+    dpg.configure_item(
+        ui.phase_angle_menu_item,
+        callback=set_phase_display,
+        user_data=(ui, PhaseDisplayMode.ANGLE),
+    )
+    dpg.configure_item(
+        ui.phase_derivative_menu_item,
+        callback=set_phase_display,
+        user_data=(ui, PhaseDisplayMode.DERIVATIVE),
     )
     dpg.configure_item(
         ui.input_combo,
@@ -182,7 +199,8 @@ def show_calibration_setup(sender, app_data, user_data: ImpedanceUi) -> None:
         user_data.calibration_text,
         "Stage 1 of 2: channel calibration\n\n"
         "Connect CH1 and CH2 to the same audio_out point relative to ground.\n"
-        "Both inputs must receive exactly the same electrical signal.",
+        "Both inputs must receive the same electrical multitone signal.\n"
+        "Different channel gain and a small delay are allowed.",
     )
     dpg.configure_item(
         user_data.calibration_continue_button,
@@ -225,6 +243,20 @@ def filtering_changed(sender, app_data, user_data: ImpedanceUi) -> None:
         user_data.state.request_reprocess(build_config(user_data))
     except (TypeError, ValueError) as exc:
         show_error(user_data, exc)
+
+
+def set_phase_display(sender, app_data, user_data) -> None:
+    ui, mode = user_data
+    ui.phase_mode = mode
+    dpg.set_value(
+        ui.phase_angle_menu_item,
+        mode == PhaseDisplayMode.ANGLE,
+    )
+    dpg.set_value(
+        ui.phase_derivative_menu_item,
+        mode == PhaseDisplayMode.DERIVATIVE,
+    )
+    update_plot(ui, ui.state.snapshot())
 
 
 def show_export_dialog(sender, app_data, user_data) -> None:
@@ -415,12 +447,7 @@ def sync_ui(ui: ImpedanceUi) -> None:
     ui.input_level_meter.set_levels(*snapshot.levels)
 
     if snapshot.frequency is not None and snapshot.impedance is not None:
-        frequency = snapshot.frequency.tolist()
-        magnitude, phase = impedance_plot_data(snapshot.impedance)
-        dpg.set_value(ui.impedance_line, [frequency, magnitude.tolist()])
-        dpg.set_value(ui.phase_line, [frequency, phase.tolist()])
-        dpg.fit_axis_data(ui.impedance_axis)
-        dpg.fit_axis_data(ui.phase_axis)
+        update_plot(ui, snapshot)
     elif snapshot.state in (
         MeasurementState.UNCALIBRATED,
         MeasurementState.CALIBRATING,
@@ -445,3 +472,28 @@ def sync_ui(ui: ImpedanceUi) -> None:
             tuple(("", "", "") for _ in range(SPICE_SECTION_COUNT)),
             "",
         )
+
+
+def update_plot(ui: ImpedanceUi, snapshot) -> None:
+    if snapshot.frequency is None or snapshot.impedance is None:
+        return
+    frequency = snapshot.frequency
+    magnitude = abs(snapshot.impedance)
+    impedance_min, impedance_max = impedance_axis_limits(magnitude)
+    phase, axis_label, series_label = phase_plot_data(
+        frequency,
+        snapshot.impedance,
+        ui.phase_mode,
+    )
+    x_values = frequency.tolist()
+    dpg.set_value(ui.impedance_line, [x_values, magnitude.tolist()])
+    dpg.set_value(ui.phase_line, [x_values, phase.tolist()])
+    dpg.configure_item(ui.phase_axis, label=axis_label)
+    dpg.configure_item(ui.phase_line, label=series_label)
+    dpg.set_axis_limits(
+        ui.impedance_axis,
+        impedance_min,
+        impedance_max,
+    )
+    dpg.set_axis_limits_auto(ui.phase_axis)
+    dpg.fit_axis_data(ui.phase_axis)

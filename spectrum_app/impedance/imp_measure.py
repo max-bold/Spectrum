@@ -14,8 +14,9 @@ import numpy as np
 import sounddevice as sd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import least_squares
-from scipy.signal import chirp, find_peaks
+from scipy.signal import chirp, correlate, find_peaks
 from utils.windows import Windows, log_filter2
 
 GENERATOR_AMPLITUDE = 0.9
@@ -23,6 +24,13 @@ MAX_FILTER_WINDOW_WIDTH = 3.0
 LEVEL_UPDATE_RATE = 12.0
 LEVEL_UPDATE_INTERVAL = 1.0 / LEVEL_UPDATE_RATE
 LEVEL_SMOOTHING = 0.35
+CHANNEL_SIMILARITY_THRESHOLD = 0.9
+CHANNEL_SIMILARITY_MAX_DELAY_SECONDS = 0.02
+CHANNEL_CALIBRATION_TONES = 12
+CHANNEL_TONE_ENERGY_RATIO_MIN = 0.75
+CHANNEL_GAIN_PROFILE_STD_MAX_DB = 3.0
+CHANNEL_GAIN_PROFILE_PEAK_MAX_DB = 8.0
+CHANNEL_PHASE_RESIDUAL_RMS_MAX_DEG = 35.0
 
 
 class MeasurementState(str, Enum):
@@ -45,6 +53,11 @@ class WindowFunction(str, Enum):
     COSINE = "cosine"
     GAUSSIAN = "gaussian"
     TRIANGULAR = "triangular"
+
+
+class PhaseDisplayMode(str, Enum):
+    ANGLE = "angle"
+    DERIVATIVE = "derivative"
 
 
 @dataclass(frozen=True)
@@ -396,7 +409,7 @@ class ImpedanceAppState:
 
     def _channel_calibration_worker(self, config: MeasurementConfig) -> None:
         try:
-            signal = generate_measurement_signal(config)
+            signal = generate_channel_calibration_signal(config)
             recording = self._recorder(
                 signal,
                 config,
@@ -671,6 +684,51 @@ def generate_measurement_signal(config: MeasurementConfig) -> np.ndarray:
     return signal.astype(np.float32)
 
 
+def channel_calibration_frequencies(
+    config: MeasurementConfig,
+) -> np.ndarray:
+    config.validate()
+    resolution = 1.0 / config.duration
+    low = max(config.f_min, 4.0 * resolution)
+    high = min(config.f_max, config.sample_rate * 0.45)
+    if high <= low:
+        raise ValueError("Frequency band is too narrow for channel calibration")
+    frequencies = np.geomspace(low, high, CHANNEL_CALIBRATION_TONES)
+    coherent = np.rint(frequencies / resolution) * resolution
+    coherent = np.unique(np.clip(coherent, low, high))
+    if coherent.size < 3:
+        raise ValueError(
+            "At least three calibration tones are required in the frequency band"
+        )
+    return coherent
+
+
+def generate_channel_calibration_signal(
+    config: MeasurementConfig,
+) -> np.ndarray:
+    frequencies = channel_calibration_frequencies(config)
+    samples = int(round(config.sample_rate * config.duration))
+    time = np.arange(samples, dtype=np.float64) / config.sample_rate
+    indices = np.arange(frequencies.size, dtype=np.float64)
+    phases = np.pi * indices * (indices - 1.0) / frequencies.size
+    signal = np.sum(
+        np.cos(
+            2.0 * np.pi * frequencies[:, None] * time[None, :]
+            + phases[:, None]
+        ),
+        axis=0,
+    )
+    peak = float(np.max(np.abs(signal)))
+    if peak <= 0:
+        raise ValueError("Could not generate channel calibration signal")
+    signal *= GENERATOR_AMPLITUDE / peak
+    fade_samples = min(int(round(0.02 * config.sample_rate)), samples // 4)
+    if fade_samples:
+        signal[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples)
+        signal[-fade_samples:] *= np.linspace(1.0, 0.0, fade_samples)
+    return signal.astype(np.float32)
+
+
 def play_and_record(
     signal: np.ndarray,
     config: MeasurementConfig,
@@ -874,21 +932,230 @@ def calculate_channel_correction(
     ch2: np.ndarray,
     config: MeasurementConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
-    frequency, v1, v2 = calculate_fft_spectra(ch1, ch2, config.sample_rate)
-    frequency, v1, v2 = smooth_fft_spectra(
-        frequency,
-        v1,
-        v2,
-        config,
+    tone_frequency = channel_calibration_frequencies(config)
+    delay_samples, similarity = estimate_channel_delay(
+        ch1,
+        ch2,
+        config.sample_rate,
     )
-    valid = np.abs(v1) >= 1e-12
-    correction = np.full(
-        v1.shape,
-        np.nan + 1j * np.nan,
+    tone_ch1 = extract_tone_amplitudes(
+        ch1,
+        config.sample_rate,
+        tone_frequency,
+    )
+    tone_ch2 = extract_tone_amplitudes(
+        ch2,
+        config.sample_rate,
+        tone_frequency,
+    )
+    validate_multitone_channels(
+        ch1,
+        ch2,
+        tone_ch1,
+        tone_ch2,
+        tone_frequency,
+        config.sample_rate,
+        delay_samples,
+        similarity,
+    )
+
+    tone_correction = tone_ch2 / tone_ch1
+    delay_phase = (
+        -2.0
+        * np.pi
+        * tone_frequency
+        * delay_samples
+        / config.sample_rate
+    )
+    residual_phase = np.unwrap(np.angle(tone_correction) - delay_phase)
+    gain_db = 20.0 * np.log10(np.abs(tone_correction))
+
+    frequency = np.geomspace(config.f_min, config.f_max, config.points)
+    log_tones = np.log(tone_frequency)
+    log_grid = np.log(frequency)
+    interpolated_gain = np.interp(log_grid, log_tones, gain_db)
+    interpolated_residual_phase = np.interp(
+        log_grid,
+        log_tones,
+        residual_phase,
+    )
+    interpolated_delay_phase = (
+        -2.0
+        * np.pi
+        * frequency
+        * delay_samples
+        / config.sample_rate
+    )
+    correction = (
+        np.power(10.0, interpolated_gain / 20.0)
+        * np.exp(
+            1j
+            * (interpolated_residual_phase + interpolated_delay_phase)
+        )
+    )
+    return frequency, correction
+
+
+def extract_tone_amplitudes(
+    signal: np.ndarray,
+    sample_rate: int,
+    frequencies: np.ndarray,
+) -> np.ndarray:
+    values = np.asarray(signal, dtype=np.float64).reshape(-1)
+    if values.size < 2:
+        raise ValueError("At least two samples are required")
+    values = values - np.mean(values)
+    window = np.hanning(values.size)
+    normalization = float(np.sum(window))
+    if normalization <= 0:
+        raise ValueError("Channel calibration recording is too short")
+    time = np.arange(values.size, dtype=np.float64) / sample_rate
+    windowed = values * window
+    return np.asarray(
+        [
+            2.0
+            * np.sum(
+                windowed * np.exp(-2j * np.pi * frequency * time)
+            )
+            / normalization
+            for frequency in frequencies
+        ],
         dtype=np.complex128,
     )
-    correction[valid] = v2[valid] / v1[valid]
-    return frequency, correction
+
+
+def estimate_channel_delay(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    sample_rate: int,
+    *,
+    max_delay_seconds: float = CHANNEL_SIMILARITY_MAX_DELAY_SECONDS,
+) -> tuple[int, float]:
+    x1 = np.asarray(ch1, dtype=np.float64).reshape(-1)
+    x2 = np.asarray(ch2, dtype=np.float64).reshape(-1)
+    size = min(x1.size, x2.size)
+    if size < 2:
+        raise ValueError("At least two samples are required")
+    x1 = x1[:size] - np.mean(x1[:size])
+    x2 = x2[:size] - np.mean(x2[:size])
+    norm = float(np.linalg.norm(x1) * np.linalg.norm(x2))
+    if norm <= 1e-12:
+        raise ValueError(
+            "Channel calibration failed: one of the input signals is empty"
+        )
+    correlation = correlate(x2, x1, mode="full", method="fft")
+    center = size - 1
+    max_delay = min(
+        size - 1,
+        max(0, int(round(sample_rate * max_delay_seconds))),
+    )
+    active = correlation[
+        center - max_delay : center + max_delay + 1
+    ]
+    peak_index = int(np.argmax(np.abs(active)))
+    delay_samples = peak_index - max_delay
+    similarity = min(float(np.abs(active[peak_index]) / norm), 1.0)
+    return delay_samples, similarity
+
+
+def validate_multitone_channels(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    tone_ch1: np.ndarray,
+    tone_ch2: np.ndarray,
+    frequencies: np.ndarray,
+    sample_rate: int,
+    delay_samples: int,
+    similarity: float,
+) -> None:
+    tone_floor = 1e-9
+    if np.any(np.abs(tone_ch1) < tone_floor) or np.any(
+        np.abs(tone_ch2) < tone_floor
+    ):
+        raise ValueError(
+            "Channel calibration failed: one or more test tones are missing"
+        )
+
+    signal_rms = (
+        float(np.sqrt(np.mean(np.square(ch1)))),
+        float(np.sqrt(np.mean(np.square(ch2)))),
+    )
+    tone_rms = (
+        float(np.sqrt(np.sum(np.abs(tone_ch1) ** 2) / 2.0)),
+        float(np.sqrt(np.sum(np.abs(tone_ch2) ** 2) / 2.0)),
+    )
+    energy_ratios = tuple(
+        tone / max(total, 1e-12)
+        for tone, total in zip(tone_rms, signal_rms)
+    )
+    if min(energy_ratios) < CHANNEL_TONE_ENERGY_RATIO_MIN:
+        raise ValueError(
+            "Channel calibration failed: the recorded signals are not the "
+            "generated multitone signal"
+        )
+
+    correction = tone_ch2 / tone_ch1
+    gain_db = 20.0 * np.log10(np.abs(correction))
+    gain_profile = gain_db - np.median(gain_db)
+    gain_std = float(np.std(gain_profile))
+    gain_peak = float(np.max(np.abs(gain_profile)))
+    if (
+        gain_std > CHANNEL_GAIN_PROFILE_STD_MAX_DB
+        or gain_peak > CHANNEL_GAIN_PROFILE_PEAK_MAX_DB
+    ):
+        raise ValueError(
+            "Channel calibration failed: CH1 and CH2 have different level "
+            f"profiles across the test tones (spread {gain_std:.2f} dB, "
+            f"peak {gain_peak:.2f} dB)"
+        )
+
+    delay_phase = (
+        -2.0
+        * np.pi
+        * frequencies
+        * delay_samples
+        / sample_rate
+    )
+    residual_phase = np.unwrap(np.angle(correction) - delay_phase)
+    residual_phase -= np.median(residual_phase)
+    phase_rms_deg = float(
+        np.sqrt(np.mean(np.square(residual_phase))) * 180.0 / np.pi
+    )
+    if phase_rms_deg > CHANNEL_PHASE_RESIDUAL_RMS_MAX_DEG:
+        raise ValueError(
+            "Channel calibration failed: CH1 and CH2 have incompatible "
+            f"phase responses across the test tones ({phase_rms_deg:.1f} deg RMS)"
+        )
+    if similarity < CHANNEL_SIMILARITY_THRESHOLD:
+        raise ValueError(
+            "Channel calibration failed: CH1 and CH2 contain different "
+            f"signals (similarity {similarity:.1%}, required "
+            f"{CHANNEL_SIMILARITY_THRESHOLD:.0%})"
+        )
+
+
+def validate_channel_similarity(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    sample_rate: int,
+    *,
+    threshold: float = CHANNEL_SIMILARITY_THRESHOLD,
+    max_delay_seconds: float = CHANNEL_SIMILARITY_MAX_DELAY_SECONDS,
+) -> float:
+    _, similarity = estimate_channel_delay(
+        ch1,
+        ch2,
+        sample_rate,
+        max_delay_seconds=max_delay_seconds,
+    )
+    if similarity < threshold:
+        raise ValueError(
+            "Channel calibration failed: CH1 and CH2 contain different "
+            f"signals (similarity {similarity:.1%}, required "
+            f"{threshold:.0%}). Connect both inputs to the same audio_out "
+            "point."
+        )
+    return similarity
 
 
 def validate_channel_correction(channel_correction: np.ndarray) -> None:
@@ -1117,7 +1384,86 @@ def impedance_plot_data(
     impedance: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     values = np.asarray(impedance, dtype=np.complex128)
-    return np.abs(values), -np.angle(values, deg=True)
+    return np.abs(values), current_phase_angle(values)
+
+
+def impedance_axis_limits(
+    magnitude: np.ndarray,
+    *,
+    headroom: float = 0.05,
+) -> tuple[float, float]:
+    values = np.asarray(magnitude, dtype=np.float64)
+    valid = values[np.isfinite(values) & (values >= 0)]
+    if valid.size == 0:
+        return 0.0, 1.0
+    maximum = float(np.max(valid))
+    if maximum <= 0:
+        return 0.0, 1.0
+    return 0.0, maximum * (1.0 + headroom)
+
+
+def current_phase_angle(impedance: np.ndarray) -> np.ndarray:
+    values = np.asarray(impedance, dtype=np.complex128)
+    phase = np.full(values.shape, np.nan, dtype=np.float64)
+    valid = np.isfinite(values.real) & np.isfinite(values.imag)
+    if np.any(valid):
+        phase[valid] = -np.rad2deg(np.unwrap(np.angle(values[valid])))
+    return phase
+
+
+def current_phase_derivative(
+    frequency: np.ndarray,
+    impedance: np.ndarray,
+    *,
+    smoothing_sigma: float = 2.0,
+) -> np.ndarray:
+    frequency = np.asarray(frequency, dtype=np.float64)
+    values = np.asarray(impedance, dtype=np.complex128)
+    if frequency.shape != values.shape:
+        raise ValueError("Frequency and impedance arrays must have equal shapes")
+
+    result = np.full(frequency.shape, np.nan, dtype=np.float64)
+    valid = (
+        (frequency > 0)
+        & np.isfinite(frequency)
+        & np.isfinite(values.real)
+        & np.isfinite(values.imag)
+    )
+    if np.count_nonzero(valid) < 3:
+        return result
+
+    valid_frequency = frequency[valid]
+    if np.any(np.diff(valid_frequency) <= 0):
+        raise ValueError("Frequency values must be strictly increasing")
+    phase = current_phase_angle(values[valid])
+    if smoothing_sigma > 0:
+        phase = gaussian_filter1d(
+            phase,
+            sigma=smoothing_sigma,
+            mode="nearest",
+        )
+    result[valid] = np.gradient(
+        phase,
+        np.log10(valid_frequency),
+        edge_order=2,
+    )
+    return result
+
+
+def phase_plot_data(
+    frequency: np.ndarray,
+    impedance: np.ndarray,
+    mode: PhaseDisplayMode,
+) -> tuple[np.ndarray, str, str]:
+    if mode == PhaseDisplayMode.ANGLE:
+        return current_phase_angle(impedance), "Current phase (deg)", "Angle"
+    if mode == PhaseDisplayMode.DERIVATIVE:
+        return (
+            current_phase_derivative(frequency, impedance),
+            "d phase / d log10(f) (deg/decade)",
+            "Phase derivative",
+        )
+    raise ValueError(f"Unknown phase display mode: {mode}")
 
 
 def export_impedance_plot(

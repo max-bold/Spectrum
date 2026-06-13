@@ -176,6 +176,19 @@ def impedance_ui(
                     label="IO",
                     tag="impedance_io_settings_menu",
                 )
+                with dpg.menu(label="Phaze"):
+                    phase_angle_menu_item = dpg.add_menu_item(
+                        label="Angle",
+                        check=True,
+                        default_value=True,
+                        tag="impedance_phase_angle_menu",
+                    )
+                    phase_derivative_menu_item = dpg.add_menu_item(
+                        label="Dir",
+                        check=True,
+                        default_value=False,
+                        tag="impedance_phase_derivative_menu",
+                    )
 
         layout_group = dpg.add_group(
             horizontal=False,
@@ -371,6 +384,8 @@ def impedance_ui(
         calibration_continue_button=calibration_continue_button,
         calibration_cancel_button=calibration_cancel_button,
         io_menu_item=io_menu_item,
+        phase_angle_menu_item=phase_angle_menu_item,
+        phase_derivative_menu_item=phase_derivative_menu_item,
         io_dialog=io_dialog,
         input_combo=input_combo,
         output_combo=output_combo,
