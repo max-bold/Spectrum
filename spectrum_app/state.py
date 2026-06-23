@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Queue
 from threading import Event, Thread
 from time import sleep, time
 
@@ -46,17 +47,36 @@ class AppState:
     current_line: int = 0
     levels_l: int | str | None = None
     levels_r: int | str | None = None
+    analyzer_mode_combo: int | str | None = None
     ref_combo: int | str | None = None
+    weighting_combo: int | str | None = None
+    band_input: int | str | None = None
     welch_n_input: int | str | None = None
+    window_width_input: int | str | None = None
+    freq_length_input: int | str | None = None
+    window_func_combo: int | str | None = None
     lines_table_rows: list[list[int | str]] = field(default_factory=list)
     records: list[np.ndarray] = field(default_factory=list)
     generator_signals: list[np.ndarray] = field(default_factory=list)
     record_sample_rates: list[int] = field(default_factory=list)
+    record_settings: list[dict] = field(default_factory=list)
     analyzer_line_index: int = 0
     completed_audio_record: np.ndarray | None = None
     completed_generator_signal: np.ndarray | None = None
     completed_audio_sample_rate: int = 0
     pending_reanalysis: bool = False
+    pending_project_warning: str | None = None
+    pending_project_warning_frames: int = 0
+    project_progress_active: bool = False
+    project_progress_title: str = ""
+    project_progress_status: str = ""
+    project_progress_value: float = 0.0
+    project_progress_phase: float = 0.0
+    project_progress_waiting_analyzer: bool = False
+    project_reanalysis_queue: list[int] = field(default_factory=list)
+    fit_fft_yaxis_after_project_open: bool = False
+    unlock_fft_yaxis_frames: int = 0
+    project_results: Queue = field(default_factory=Queue)
     project_path: Path | None = None
     io_reenable_timer: "Timer | None" = None
     pending_audio_start: bool = False

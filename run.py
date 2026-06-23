@@ -2,14 +2,12 @@ import dearpygui.dearpygui as dpg
 
 from spectrum_app.gui import build_ui
 from spectrum_app.callbacks import bind_input_commit_handlers
-from spectrum_app.fonts import bind_app_font
 from spectrum_app.state import create_app_state
 from spectrum_app.ui.sync import sync_ui
 
 
 def main() -> None:
     dpg.create_context()
-    bind_app_font()
     state = create_app_state()
     refs = build_ui(state)
     bind_input_commit_handlers(state, refs)

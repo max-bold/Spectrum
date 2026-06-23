@@ -22,8 +22,6 @@ else:
         add_spice_model_table,
     )
 
-from spectrum_app.fonts import bind_app_font
-
 IMPEDANCE_WINDOW = "Impedance window"
 GRAPH_TABLE_SPACING = 4
 STATUS_BAR_HEIGHT = 28
@@ -409,7 +407,6 @@ def impedance_ui(
 
 if __name__ == "__main__":
     dpg.create_context()
-    bind_app_font()
     ui = impedance_ui()
     dpg.create_viewport(title="Impedance Measurement", width=1024, height=768)
     dpg.setup_dearpygui()

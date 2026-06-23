@@ -218,7 +218,7 @@ class InputMeter(Thread):
         device (int | None): Audio input device index, None for default
     """
 
-    def __init__(self) -> None:
+    def __init__(self, block_size: int = 1024) -> None:
         """Initialize the input level meter."""
         # Level measurement data
         self.level = np.zeros(2)  # [Left, Right] channel levels

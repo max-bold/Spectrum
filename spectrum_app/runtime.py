@@ -7,6 +7,7 @@ from .analysis import (
     process_pending_reanalysis,
     raw_audio_record,
     save_active_audio_record,
+    save_analysis_settings_for_record,
 )
 from .state import AppState
 
@@ -69,8 +70,10 @@ def run_analyzer(state: AppState) -> None:
         state.analyzer.completed.clear()
         fft_data = state.analyzer.result.copy()
         line_index = state.analyzer_line_index
+        fit_fft_yaxis = state.completed_audio_record is not None
         if state.completed_audio_record is not None:
             save_active_audio_record(state, state.completed_audio_record)
+            save_analysis_settings_for_record(state, line_index)
             state.completed_audio_record = None
             state.completed_generator_signal = None
             state.completed_audio_sample_rate = 0
@@ -80,7 +83,7 @@ def run_analyzer(state: AppState) -> None:
         dpg.set_value(line, [fft_data[0].tolist(), fft_data[1].tolist()])
         dpg.show_item(line)
         dpg.set_value(state.lines_table_rows[line_index][1], True)
-        if state.fft_yaxis is not None:
+        if fit_fft_yaxis and state.fft_yaxis is not None:
             dpg.fit_axis_data(state.fft_yaxis)
         process_pending_reanalysis(state)
     else:

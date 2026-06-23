@@ -4,6 +4,7 @@ from .models import AnalyzerMode, GenMode, RefMode, WeightingMode
 from utils.windows import Windows
 
 from .analysis import (
+    apply_current_record_analysis_settings,
     available_ref_modes,
     clamp_band,
     clamp_freq_length,
@@ -12,7 +13,10 @@ from .analysis import (
     clamp_window_width,
     ensure_current_reference_is_available,
     request_current_record_reanalysis,
+    save_current_analysis_settings,
+    sync_analysis_controls,
     sync_welch_limit,
+    update_current_record_level_plot,
 )
 from .state import AppState
 from .settings import DEFAULT_INPUT, DEFAULT_OUTPUT, resolve_device
@@ -47,6 +51,7 @@ def set_band(source, band: list[int], state: AppState) -> None:
     state.analyzer.band = (low, high)
     if [low, high] != list(map(float, band[:2])):
         dpg.set_value(source, [int(low), int(high), 0, 0])
+    save_current_analysis_settings(state)
     request_current_record_reanalysis(state)
 
 
@@ -78,10 +83,9 @@ def set_input_meter(source: int, enabled: bool, state: AppState) -> None:
         state.io_upd.enable.set()
 
 
-def upd_level_monitor(state: AppState, bars) -> None:
+def upd_level_monitor(state: AppState, level_meter) -> None:
     levels = state.meter.get_levels()
-    dpg.set_value(bars[0], levels[0])
-    dpg.set_value(bars[1], levels[1])
+    level_meter.set_levels(float(levels[0]), float(levels[1]))
 
 
 def upd_io(state: AppState, inputs_combo: int | str, outputs_combo: int | str) -> None:
@@ -167,8 +171,27 @@ def set_output(s, name: str, state: AppState) -> None:
     state.settings.save()
 
 
+def set_block_size(sender, value: int, state: AppState) -> None:
+    block_size = max(1, int(value))
+    state.settings.audio.block_size = block_size
+    state.audio_io.block_size = block_size
+    state.meter.block_size = block_size
+    if block_size != value:
+        dpg.set_value(sender, block_size)
+    state.settings.save()
+
+
+def show_io_settings(sender, app_data, user_data: int | str) -> None:
+    dpg.show_item(user_data)
+
+
+def close_io_settings(sender, app_data, user_data: int | str) -> None:
+    dpg.hide_item(user_data)
+
+
 def set_analyzer_mode(s, mode: str, state: AppState) -> None:
     state.analyzer.analyzer_mode = AnalyzerMode(mode)
+    save_current_analysis_settings(state)
     request_current_record_reanalysis(state)
 
 
@@ -180,11 +203,13 @@ def set_analyzer_ref(s, ref: str, state: AppState) -> None:
             dpg.set_value(s, ref_mode.value)
     state.analyzer.ref = ref_mode
     state.audio_io.ref = ref_mode
+    save_current_analysis_settings(state)
     request_current_record_reanalysis(state)
 
 
 def set_analyzer_weighting(s, weighting: str, state: AppState) -> None:
     state.analyzer.weighting = WeightingMode(weighting)
+    save_current_analysis_settings(state)
     request_current_record_reanalysis(state)
 
 
@@ -192,6 +217,7 @@ def set_bucket_size(s, size: int, state: AppState) -> None:
     state.analyzer.welch_n = clamp_welch_n(state, size)
     if state.analyzer.welch_n != size:
         dpg.set_value(s, state.analyzer.welch_n)
+    save_current_analysis_settings(state)
     request_current_record_reanalysis(state)
 
 
@@ -204,6 +230,7 @@ def set_window_width(s, width: float, state: AppState) -> None:
     state.analyzer.window_width = clamp_window_width(width)
     if state.analyzer.window_width != width:
         dpg.set_value(s, state.analyzer.window_width)
+    save_current_analysis_settings(state)
     request_current_record_reanalysis(state)
 
 
@@ -216,6 +243,7 @@ def set_freq_length(s, length: int, state: AppState) -> None:
     state.analyzer.freq_length = clamp_freq_length(length)
     if state.analyzer.freq_length != length:
         dpg.set_value(s, state.analyzer.freq_length)
+    save_current_analysis_settings(state)
     request_current_record_reanalysis(state)
 
 
@@ -247,12 +275,21 @@ def record_used_click(sender, state, rows) -> None:
     else:
         app_state: AppState = rows
         for i, row in enumerate(app_state.lines_table_rows):
-            if not row[0] == sender:
-                dpg.set_value(row[0], False)
-            else:
-                app_state.current_line = i
-        ensure_current_reference_is_available(app_state)
-        request_current_record_reanalysis(app_state)
+            if row[0] == sender:
+                select_record_line(app_state, i)
+                return
+
+
+def select_record_line(app_state: AppState, index: int) -> None:
+    if index < 0 or index >= len(app_state.lines_table_rows):
+        return
+    app_state.current_line = index
+    for i, row in enumerate(app_state.lines_table_rows):
+        dpg.set_value(row[0], i == index)
+    apply_current_record_analysis_settings(app_state)
+    sync_analysis_controls(app_state)
+    update_current_record_level_plot(app_state)
+    request_current_record_reanalysis(app_state)
 
 
 def record_visible_clicked(sender, state, data) -> None:
@@ -274,4 +311,5 @@ def record_set_name(sender, name, data) -> None:
 
 def set_filter_window_func(sender, func: str, state: AppState) -> None:
     state.analyzer.window_func = Windows(func)
+    save_current_analysis_settings(state)
     request_current_record_reanalysis(state)

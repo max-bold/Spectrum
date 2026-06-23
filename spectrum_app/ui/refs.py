@@ -23,11 +23,12 @@ class ControlRefs:
     run_btn: int | str
     band_input: int | str
     rec_len: int | str
-    mon_cb: int | str
-    left_level: int | str
-    right_level: int | str
+    io_menu_item: int | str
+    io_dialog: int | str
     inputs_combo: int | str
     outputs_combo: int | str
+    block_size_input: int | str
+    close_io_button: int | str
     ref_combo: int | str
     welch_n_input: int | str
     window_width_input: int | str
@@ -39,11 +40,12 @@ class UiRefs:
     run_btn: int | str
     band_input: int | str
     rec_len: int | str
-    mon_cb: int | str
-    left_level: int | str
-    right_level: int | str
+    io_menu_item: int | str
+    io_dialog: int | str
     inputs_combo: int | str
     outputs_combo: int | str
+    block_size_input: int | str
+    close_io_button: int | str
     ref_combo: int | str
     welch_n_input: int | str
     window_width_input: int | str
@@ -57,11 +59,12 @@ def merge_refs(controls: ControlRefs, plots: PlotRefs) -> UiRefs:
         run_btn=controls.run_btn,
         band_input=controls.band_input,
         rec_len=controls.rec_len,
-        mon_cb=controls.mon_cb,
-        left_level=controls.left_level,
-        right_level=controls.right_level,
+        io_menu_item=controls.io_menu_item,
+        io_dialog=controls.io_dialog,
         inputs_combo=controls.inputs_combo,
         outputs_combo=controls.outputs_combo,
+        block_size_input=controls.block_size_input,
+        close_io_button=controls.close_io_button,
         ref_combo=controls.ref_combo,
         welch_n_input=controls.welch_n_input,
         window_width_input=controls.window_width_input,

@@ -4,6 +4,11 @@ from . import cbs
 from .ui.refs import REC_NUMBER, UiRefs
 
 
+CONTROL_PANEL_WIDTH = 200
+IO_SETTINGS_WIDTH = 520
+IO_SETTINGS_CONTENT_WIDTH = 503
+
+
 def build_ui(state: cbs.AppState) -> UiRefs:
     from .themes import green_theme
 
@@ -58,6 +63,82 @@ def build_ui(state: cbs.AppState) -> UiRefs:
             user_data=state,
         )
         dpg.add_file_extension(".bms", parent=project_open_dialog)
+        with dpg.window(
+            label="Warning",
+            show=False,
+            modal=True,
+            no_resize=True,
+            no_close=True,
+            no_scrollbar=True,
+            width=520,
+            height=150,
+            tag=cbs.PROJECT_WARNING_DIALOG,
+        ):
+            dpg.add_text("", wrap=490, tag=cbs.PROJECT_WARNING_TEXT)
+            dpg.add_button(
+                label="OK",
+                width=-1,
+                callback=cbs.close_project_warning,
+            )
+        with dpg.window(
+            label="Project",
+            show=False,
+            modal=True,
+            no_resize=True,
+            no_close=True,
+            no_scrollbar=True,
+            width=520,
+            height=135,
+            tag=cbs.PROJECT_PROGRESS_DIALOG,
+        ):
+            dpg.add_text("", wrap=490, tag=cbs.PROJECT_PROGRESS_TEXT)
+            dpg.add_progress_bar(width=-1, tag=cbs.PROJECT_PROGRESS_BAR)
+        with dpg.window(
+            label="IO Settings",
+            show=False,
+            popup=True,
+            no_resize=True,
+            no_scrollbar=True,
+            width=IO_SETTINGS_WIDTH,
+            height=235,
+            tag="main_io_settings",
+        ) as io_dialog:
+            dpg.add_text("Input")
+            inputs_combo = dpg.add_combo(
+                items=[cbs.DEFAULT_INPUT],
+                default_value=state.settings.audio.input_device,
+                width=IO_SETTINGS_CONTENT_WIDTH,
+                callback=cbs.set_input,
+                user_data=state,
+                tag="main_input_device",
+            )
+            dpg.add_text("Output")
+            outputs_combo = dpg.add_combo(
+                items=[cbs.DEFAULT_OUTPUT],
+                default_value=state.settings.audio.output_device,
+                width=IO_SETTINGS_CONTENT_WIDTH,
+                callback=cbs.set_output,
+                user_data=state,
+                tag="main_output_device",
+            )
+            dpg.add_text("Block size, samples")
+            block_size_input = dpg.add_input_int(
+                default_value=state.settings.audio.block_size,
+                min_value=1,
+                min_clamped=True,
+                step=0,
+                width=IO_SETTINGS_CONTENT_WIDTH,
+                callback=cbs.set_block_size,
+                user_data=state,
+                tag="main_block_size",
+            )
+            close_io_button = dpg.add_button(
+                label="Close",
+                width=IO_SETTINGS_CONTENT_WIDTH,
+                callback=cbs.close_io_settings,
+                user_data=io_dialog,
+                tag="main_io_close",
+            )
 
         with dpg.menu_bar():
             with dpg.menu(label="File"):
@@ -93,9 +174,16 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                         callback=cbs.show_wav_export_dialog,
                         user_data=(state, wav_dialog),
                     )
+            with dpg.menu(label="Settings"):
+                io_menu_item = dpg.add_menu_item(
+                    label="IO",
+                    callback=cbs.show_io_settings,
+                    user_data=io_dialog,
+                    tag="main_io_settings_menu",
+                )
 
         with dpg.group(horizontal=True):
-            with dpg.group(width=-200):
+            with dpg.group(width=-CONTROL_PANEL_WIDTH-7):
                 with dpg.plot(height=-200, label="FFT"):
                     dpg.add_plot_legend()
                     xaxis = dpg.add_plot_axis(
@@ -118,7 +206,7 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                         state.levels_l = dpg.add_line_series([], [])
                         state.levels_r = dpg.add_line_series([], [])
 
-            with dpg.group():
+            with dpg.group(width=CONTROL_PANEL_WIDTH):
                 run_btn = dpg.add_button(
                     label="OFF",
                     width=-1,
@@ -149,6 +237,7 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                             callback=cbs.set_band,
                             user_data=state,
                         )
+                        state.band_input = band_input
                         dpg.add_text("Length, s")
                         rec_len = dpg.add_input_float(
                             width=-1,
@@ -161,39 +250,16 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                             user_data=state,
                         )
 
-                    with dpg.collapsing_header(label="Audio I/O"):
-                        with dpg.group(width=-1):
-                            dpg.add_text("Input")
-                            inputs_combo = dpg.add_combo(
-                                default_value=state.settings.audio.input_device,
-                                callback=cbs.set_input,
-                                user_data=state,
-                            )
-                            with dpg.group(horizontal=True):
-                                mon_cb = dpg.add_checkbox(
-                                    callback=cbs.set_input_meter,
-                                    user_data=state,
-                                    tag="meter_cb",
-                                )
-                                with dpg.group():
-                                    left_level = dpg.add_progress_bar(height=7)
-                                    right_level = dpg.add_progress_bar(height=7)
-                            dpg.add_text("Output")
-                            outputs_combo = dpg.add_combo(
-                                default_value=state.settings.audio.output_device,
-                                callback=cbs.set_output,
-                                user_data=state,
-                            )
-
                     with dpg.collapsing_header(label="Analyzer"):
                         with dpg.group(width=-1):
                             dpg.add_text("Mode")
-                            dpg.add_combo(
+                            analyzer_mode_combo = dpg.add_combo(
                                 cbs.AnalyzerMode.list(),
                                 default_value=state.analyzer.analyzer_mode.value,
                                 callback=cbs.set_analyzer_mode,
                                 user_data=state,
                             )
+                            state.analyzer_mode_combo = analyzer_mode_combo
                             with dpg.group():
                                 dpg.add_text("Welch bucket size, samples")
                                 welch_n_input = dpg.add_input_int(
@@ -212,12 +278,13 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                             )
                             state.ref_combo = ref_combo
                             dpg.add_text("Weighting")
-                            dpg.add_combo(
+                            weighting_combo = dpg.add_combo(
                                 cbs.WeightingMode.list(),
                                 default_value=state.analyzer.weighting.value,
                                 callback=cbs.set_analyzer_weighting,
                                 user_data=state,
                             )
+                            state.weighting_combo = weighting_combo
 
                     with dpg.collapsing_header(label="Filtering"):
                         with dpg.group(width=-1):
@@ -236,12 +303,15 @@ def build_ui(state: cbs.AppState) -> UiRefs:
                                 step=0,
                             )
                             dpg.add_text("Window function")
-                            dpg.add_combo(
+                            window_func_combo = dpg.add_combo(
                                 cbs.Windows.list(),
                                 default_value=state.analyzer.window_func.value,
                                 callback=cbs.set_filter_window_func,
                                 user_data=state,
                             )
+                            state.window_width_input = window_width_input
+                            state.freq_length_input = freq_length_input
+                            state.window_func_combo = window_func_combo
 
                 dpg.add_separator(label="Records")
                 with dpg.table(header_row=False, policy=dpg.mvTable_SizingFixedFit):
@@ -271,11 +341,12 @@ def build_ui(state: cbs.AppState) -> UiRefs:
         run_btn=run_btn,
         band_input=band_input,
         rec_len=rec_len,
-        mon_cb=mon_cb,
-        left_level=left_level,
-        right_level=right_level,
+        io_menu_item=io_menu_item,
+        io_dialog=io_dialog,
         inputs_combo=inputs_combo,
         outputs_combo=outputs_combo,
+        block_size_input=block_size_input,
+        close_io_button=close_io_button,
         ref_combo=ref_combo,
         welch_n_input=welch_n_input,
         window_width_input=window_width_input,

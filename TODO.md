@@ -16,9 +16,9 @@ v0.2.2
 
 v0.2.3
 - Fix pink noise generator clicking
-- Saving input/output settings on app restart
-- Buffer size selection in settings
-- Update timeplot on record import
++ Saving input/output settings on app restart
++ Buffer size selection in settings
++ Update timeplot on record import
 
 v0.3
 - Implement multi-record mode with averaging
