@@ -22,6 +22,7 @@ v0.2.3
 
 v0.2.4
 - Get Apple Developer credentials for macOS Developer ID signing and notarization
+- Fix missing microphone permission prompt on macOS Tahoe arm64 builds
 
 v0.3
 - Implement multi-record mode with averaging
