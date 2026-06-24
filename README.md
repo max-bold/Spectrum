@@ -29,6 +29,18 @@ A real-time audio spectrum analyzer built with Python and Dear PyGui, designed f
    pip install -r requirements.txt
    ```
 
+## Release builds
+
+Tagged pushes build release artifacts automatically with GitHub Actions:
+
+```bash
+git tag v0.2.3
+git push origin v0.2.3
+```
+
+The release workflow publishes separate Windows, macOS Intel, and macOS Apple
+Silicon zip files.
+
 ## Usage
 
 To start the spectrum analyzer, run:
