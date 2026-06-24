@@ -41,6 +41,20 @@ git push origin v0.2.3
 The release workflow publishes separate Windows, macOS Intel, and macOS Apple
 Silicon zip files.
 
+### macOS Gatekeeper
+
+Current macOS release builds are packaged as `.app` bundles, but they are not
+yet notarized by Apple. On first launch, Finder may show: "Apple cannot check it
+for malicious software." This is expected until the project has Apple Developer
+credentials for Developer ID signing and notarization.
+
+To open a downloaded macOS build, right-click the app and choose **Open**, then
+confirm the prompt. Advanced users can also remove the quarantine attribute:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/BM_Spectrum_v0.2.3_macos-x86_64.app
+```
+
 ## Usage
 
 To start the spectrum analyzer, run:

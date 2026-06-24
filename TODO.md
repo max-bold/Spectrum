@@ -20,6 +20,9 @@ v0.2.3
 + Buffer size selection in settings
 + Update timeplot on record import
 
+v0.2.4
+- Get Apple Developer credentials for macOS Developer ID signing and notarization
+
 v0.3
 - Implement multi-record mode with averaging
 - Implement THD calculation and display using Farina's method
