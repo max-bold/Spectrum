@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-import audioanalysis.audioio as audioio_module
+import audioanalysis.generators as generators_module
 from audioanalysis import (
     ASignal,
     FrequencyBand,
@@ -23,6 +23,7 @@ from audioanalysis import (
     white_noise,
 )
 from audioanalysis.impedance import calculate_impedance_from_transfer
+from scipy.signal import sosfreqz
 
 
 class AudioAnalysisPackageTests(unittest.TestCase):
@@ -271,6 +272,92 @@ class AudioAnalysisPackageTests(unittest.TestCase):
         self.assertEqual(signal.as_array().shape, (32, 1))
         self.assertEqual(zf.shape, zi.shape)
 
+    def test_pink_noise_does_not_normalize_each_generated_block(self) -> None:
+        short = pink_noise(
+            480,
+            48_000,
+            FrequencyBand(100.0, 10_000.0),
+            amplitude=0.9,
+            rng=np.random.default_rng(5),
+            pad=0,
+            fade=0,
+        )
+        long = pink_noise(
+            960,
+            48_000,
+            FrequencyBand(100.0, 10_000.0),
+            amplitude=0.9,
+            rng=np.random.default_rng(5),
+            pad=0,
+            fade=0,
+        )
+
+        np.testing.assert_allclose(short.as_array(), long.as_array()[:480])
+
+    def test_pinking_filter_tracks_physical_frequencies_across_sample_rates(
+        self,
+    ) -> None:
+        frequency = np.geomspace(30.0, 15_000.0, 512)
+        _, reference = sosfreqz(
+            generators_module.PINKING_SOS,
+            worN=frequency,
+            fs=generators_module.PINKING_REFERENCE_SAMPLE_RATE,
+        )
+
+        for sample_rate in (48_000, 96_000, 192_000):
+            with self.subTest(sample_rate=sample_rate):
+                _, actual = sosfreqz(
+                    generators_module._pinking_sos(sample_rate),
+                    worN=frequency,
+                    fs=sample_rate,
+                )
+                difference_db = 20.0 * np.log10(np.abs(actual / reference))
+                self.assertLess(float(np.max(np.abs(difference_db))), 0.4)
+
+    def test_pinking_filter_is_unchanged_at_reference_sample_rate(self) -> None:
+        actual = generators_module._pinking_sos(
+            generators_module.PINKING_REFERENCE_SAMPLE_RATE
+        )
+
+        np.testing.assert_array_equal(actual, generators_module.PINKING_SOS)
+
+    def test_pink_noise_thread_does_not_normalize_filtered_blocks(self) -> None:
+        raw_peaks = iter((0.5, 1.0))
+        amplitudes: list[float] = []
+
+        def fake_pink_noise(*args: object, **kwargs: object) -> tuple[ASignal, np.ndarray]:
+            samples = int(args[0])
+            sample_rate = int(args[1])
+            channels = int(kwargs["channels"])
+            amplitudes.append(float(kwargs["amplitude"]))
+            data = np.full((samples, channels), next(raw_peaks), dtype=np.float32)
+            return ASignal(data, sample_rate), np.asarray(kwargs["zi"])
+
+        with (
+            patch.object(
+                generators_module.sd,
+                "query_devices",
+                return_value={
+                    "default_samplerate": 1_000.0,
+                    "max_output_channels": 2,
+                },
+            ),
+            patch.object(generators_module, "pink_noise", side_effect=fake_pink_noise),
+        ):
+            thread = PinkNoiseThread(
+                band=FrequencyBand(20.0, 400.0),
+                amplitude=0.25,
+                block_size=100,
+                pad=0.0,
+                fade=0.0,
+            )
+            first = thread._next_block(100)
+            second = thread._next_block(100)
+
+        np.testing.assert_allclose(first, 0.5)
+        np.testing.assert_allclose(second, 1.0)
+        self.assertEqual(amplitudes, [0.25, 0.25])
+
     def test_pink_noise_thread_writes_blocks_to_output_stream(self) -> None:
         instances: list[object] = []
         holder: dict[str, PinkNoiseThread] = {}
@@ -312,14 +399,14 @@ class AudioAnalysisPackageTests(unittest.TestCase):
 
         with (
             patch.object(
-                audioio_module.sd,
+                generators_module.sd,
                 "query_devices",
                 return_value={
                     "default_samplerate": 48_000.0,
                     "max_output_channels": 2,
                 },
             ),
-            patch.object(audioio_module.sd, "OutputStream", FakeOutputStream),
+            patch.object(generators_module.sd, "OutputStream", FakeOutputStream),
         ):
             thread = PinkNoiseThread(
                 device=7,
@@ -402,11 +489,11 @@ class AudioAnalysisPackageTests(unittest.TestCase):
 
         with (
             patch.object(
-                audioio_module.sd,
+                generators_module.sd,
                 "query_devices",
                 side_effect=device_defaults,
             ),
-            patch.object(audioio_module.sd, "OutputStream", FakeOutputStream),
+            patch.object(generators_module.sd, "OutputStream", FakeOutputStream),
         ):
             thread = PinkNoiseThread(
                 band=FrequencyBand(100.0, 10_000.0),
@@ -440,7 +527,7 @@ class AudioAnalysisPackageTests(unittest.TestCase):
 
     def test_pink_noise_thread_rejects_start_after_close(self) -> None:
         with patch.object(
-            audioio_module.sd,
+            generators_module.sd,
             "query_devices",
             return_value={
                 "default_samplerate": 48_000.0,
@@ -455,14 +542,14 @@ class AudioAnalysisPackageTests(unittest.TestCase):
 
     def test_pink_noise_thread_reports_missing_device_in_init(self) -> None:
         errors = [
-            audioio_module.sd.PortAudioError("Error querying device 999999"),
+            generators_module.sd.PortAudioError("Error querying device 999999"),
             ValueError("No output device matching 'missing'"),
         ]
 
         for error in errors:
             with self.subTest(error=type(error).__name__):
                 with patch.object(
-                    audioio_module.sd,
+                    generators_module.sd,
                     "query_devices",
                     side_effect=error,
                 ):
@@ -498,15 +585,15 @@ class AudioAnalysisPackageTests(unittest.TestCase):
 
         with (
             patch.object(
-                audioio_module.sd,
+                generators_module.sd,
                 "query_devices",
                 side_effect=[
                     {"default_samplerate": 48_000.0, "max_output_channels": 2},
                     {"default_samplerate": 48_000.0, "max_output_channels": 2},
-                    audioio_module.sd.PortAudioError("Error querying device 7"),
+                    generators_module.sd.PortAudioError("Error querying device 7"),
                 ],
             ),
-            patch.object(audioio_module.sd, "OutputStream", FakeOutputStream),
+            patch.object(generators_module.sd, "OutputStream", FakeOutputStream),
         ):
             thread = PinkNoiseThread(device=7, block_size=32, pad=0.0, fade=0.0)
             holder["thread"] = thread
@@ -525,7 +612,7 @@ class AudioAnalysisPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Block size"):
             PinkNoiseThread(block_size=0)
         with patch.object(
-            audioio_module.sd,
+            generators_module.sd,
             "query_devices",
             return_value={
                 "default_samplerate": 48_000.0,
@@ -537,7 +624,7 @@ class AudioAnalysisPackageTests(unittest.TestCase):
 
     def test_pink_noise_thread_uses_output_device_defaults(self) -> None:
         with patch.object(
-            audioio_module.sd,
+            generators_module.sd,
             "query_devices",
             return_value={
                 "default_samplerate": 48_000.0,
@@ -559,7 +646,7 @@ class AudioAnalysisPackageTests(unittest.TestCase):
 
     def test_pink_noise_thread_builds_fade_and_silence_stop_tail(self) -> None:
         with patch.object(
-            audioio_module.sd,
+            generators_module.sd,
             "query_devices",
             return_value={
                 "default_samplerate": 44_100.0,
@@ -573,6 +660,37 @@ class AudioAnalysisPackageTests(unittest.TestCase):
         self.assertEqual(tail.shape, (74_970, 2))
         np.testing.assert_allclose(tail[-8_820:], 0.0)
         self.assertLess(abs(float(tail[-8_821, 0])), 1e-6)
+
+    def test_pink_noise_thread_waits_until_buffer_is_half_block(self) -> None:
+        sleeps: list[float] = []
+        with patch.object(
+            generators_module.sd,
+            "query_devices",
+            return_value={
+                "default_samplerate": 1_000.0,
+                "max_output_channels": 2,
+            },
+        ):
+            thread = PinkNoiseThread(
+                band=FrequencyBand(20.0, 400.0),
+                block_size=100,
+                fade=0.0,
+                pad=0.0,
+            )
+
+        with (
+            patch.object(
+                generators_module.time,
+                "monotonic",
+                side_effect=[0.0, 0.05],
+            ),
+            patch.object(generators_module.time, "sleep", side_effect=sleeps.append),
+        ):
+            ready = thread._wait_for_buffer_room(0.0, 100)
+
+        self.assertTrue(ready)
+        self.assertEqual(len(sleeps), 1)
+        self.assertAlmostEqual(sleeps[0], 0.01)
 
     def test_normalize_peak_can_normalize_each_channel(self) -> None:
         samples_by_channels = np.array(

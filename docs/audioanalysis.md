@@ -8,12 +8,11 @@ when user input needs to be converted into that shape.
 
 The package is intentionally split into pure analysis modules and optional audio-device integration:
 
-- `audioanalysis.generators` - test signals.
+- `audioanalysis.generators` - test signals and continuous generator workers.
 - `audioanalysis.smoothing` - logarithmic smoothing windows and grids.
 - `audioanalysis.spectrum` - periodogram/Welch analysis and reference-channel math.
 - `audioanalysis.levels` - peak normalization, channel-shape conversion, and level-meter calculations.
-- `audioanalysis.audioio` - `sounddevice` device, play/record helpers, and
-  thread-backed continuous generators.
+- `audioanalysis.audioio` - `sounddevice` device and play/record helpers.
 - `audioanalysis.thd` - harmonic distortion primitives.
 - `audioanalysis.impedance` - reusable impedance math.
 
