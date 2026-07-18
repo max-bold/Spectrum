@@ -9,12 +9,15 @@ import sounddevice as sd
 from utils.windows import log_filter2
 
 from spectrum_app.impedance.imp_measure import (
+    CHANNEL_CALIBRATION_DURATION,
     CalibrationStage,
     ImpedanceAppState,
     MeasurementConfig,
     MeasurementState,
     PhaseDisplayMode,
+    analyze_recording_levels,
     calculate_channel_correction,
+    calculate_calibration_impedance,
     calculate_impedance,
     channel_calibration_frequencies,
     current_phase_angle,
@@ -22,9 +25,12 @@ from spectrum_app.impedance.imp_measure import (
     estimate_reference_resistor,
     export_impedance_plot,
     fit_impedance,
+    fit_impedance_auto,
     generate_channel_calibration_signal,
+    generate_level_test_signal,
     generate_measurement_signal,
     impedance_axis_limits,
+    phase_axis_limits,
     play_and_record,
     phase_plot_data,
     require_valid_reference_calibration,
@@ -35,12 +41,79 @@ from spectrum_app.impedance.imp_measure import (
 
 
 class ImpedanceMathTests(unittest.TestCase):
+    def test_default_measurement_duration_is_twenty_seconds(self) -> None:
+        self.assertEqual(MeasurementConfig().duration, 20.0)
+
+    def test_input_level_error_identifies_channel_without_signal(self) -> None:
+        recording = np.column_stack((np.zeros(100), np.full(100, 0.1)))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Channel 1 \(L\): no signal",
+        ):
+            analyze_recording_levels(recording)
+
+    def test_input_level_error_distinguishes_quiet_signal(self) -> None:
+        recording = np.column_stack(
+            (np.full(100, 0.1), np.full(100, 5e-5))
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Channel 2 \(R\): signal is too quiet",
+        ):
+            analyze_recording_levels(recording)
+
+    def test_input_level_error_reports_clipping_per_channel(self) -> None:
+        recording = np.column_stack((np.full(100, 0.1), np.ones(100)))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Channel 2 \(R\): clipping detected",
+        ):
+            analyze_recording_levels(recording, raise_on_clipping=True)
+
+    def test_input_level_error_reports_different_channel_failures(self) -> None:
+        recording = np.column_stack((np.zeros(100), np.ones(100)))
+
+        with self.assertRaises(ValueError) as caught:
+            analyze_recording_levels(recording, raise_on_clipping=True)
+
+        message = str(caught.exception)
+        self.assertIn("Channel 1 (L): no signal", message)
+        self.assertIn("Channel 2 (R): clipping detected", message)
+
+    def test_calibration_impedance_preserves_complex_response(self) -> None:
+        reference_by_frequency = np.array(
+            [3.0 + 0.0j, 3.0 + 0.3j, np.nan + 1j * np.nan]
+        )
+
+        impedance = calculate_calibration_impedance(
+            reference_by_frequency,
+            reference_resistor=3.0,
+            calibration_resistor=10.0,
+        )
+
+        np.testing.assert_allclose(
+            impedance[:2],
+            30.0 / reference_by_frequency[:2],
+        )
+        self.assertTrue(np.isnan(impedance[2]))
+
     def test_impedance_axis_always_includes_zero(self) -> None:
         lower, upper = impedance_axis_limits(
             np.array([6.0, 8.0, 20.0, np.nan])
         )
         self.assertEqual(lower, 0.0)
         self.assertAlmostEqual(upper, 21.0)
+
+    def test_phase_axis_limits_include_data_with_padding(self) -> None:
+        lower, upper = phase_axis_limits(
+            np.array([-100.0, 20.0, 200.0, np.nan])
+        )
+
+        self.assertAlmostEqual(lower, -115.0)
+        self.assertAlmostEqual(upper, 215.0)
 
     def test_current_phase_is_unwrapped(self) -> None:
         expected = np.linspace(-270.0, 270.0, 128)
@@ -99,6 +172,32 @@ class ImpedanceMathTests(unittest.TestCase):
             / config.sample_rate
         )
         np.testing.assert_allclose(correction, expected, rtol=1e-4, atol=1e-5)
+
+    def test_channel_calibration_signal_uses_fixed_duration(self) -> None:
+        config = MeasurementConfig(
+            sample_rate=48000,
+            duration=0.1,
+            f_min=100.0,
+            f_max=10000.0,
+            points=128,
+        )
+        signal = generate_channel_calibration_signal(config)
+        self.assertEqual(
+            len(signal),
+            int(config.sample_rate * CHANNEL_CALIBRATION_DURATION),
+        )
+
+    def test_level_test_signal_is_loopable_multitone(self) -> None:
+        config = MeasurementConfig(
+            sample_rate=48000,
+            duration=0.1,
+            f_min=20.0,
+            f_max=20000.0,
+        )
+        signal = generate_level_test_signal(config)
+        self.assertEqual(len(signal), config.sample_rate)
+        self.assertLessEqual(float(np.max(np.abs(signal))), 0.9)
+        self.assertGreater(float(np.max(np.abs(signal))), 0.1)
 
     def test_multitone_rejects_different_rms_profiles(self) -> None:
         config = MeasurementConfig(
@@ -240,6 +339,41 @@ class ImpedanceMathTests(unittest.TestCase):
             places=5,
         )
 
+    def test_impedance_recovers_frequency_dependent_load_from_sweep(self) -> None:
+        config = MeasurementConfig(
+            sample_rate=48000,
+            duration=1.0,
+            reference_resistor=3.0,
+            calibration_resistor=9.8,
+            f_min=50.0,
+            f_max=15000.0,
+            window_width=0.05,
+            points=128,
+        )
+        channel_1 = generate_measurement_signal(config).astype(float)
+        fft_frequency = np.fft.rfftfreq(
+            channel_1.size,
+            1.0 / config.sample_rate,
+        )
+        source = np.fft.rfft(channel_1 - np.mean(channel_1))
+        expected_fft_impedance = (
+            8.0 + 1j * 2.0 * np.pi * fft_frequency * 0.0004
+        )
+        transfer = expected_fft_impedance / (
+            config.reference_resistor + expected_fft_impedance
+        )
+        channel_2 = np.fft.irfft(source * transfer, n=channel_1.size)
+        frequency, impedance = calculate_impedance(
+            channel_1,
+            channel_2,
+            config,
+            np.ones(config.points, dtype=np.complex128),
+            config.reference_resistor,
+        )
+        expected = 8.0 + 1j * 2.0 * np.pi * frequency * 0.0004
+        relative_error = np.abs((impedance - expected) / expected)
+        self.assertLess(float(np.nanmedian(relative_error)), 1e-3)
+
     def test_same_signal_cannot_pass_resistor_calibration(self) -> None:
         config = MeasurementConfig(
             sample_rate=48000,
@@ -266,6 +400,65 @@ class ImpedanceMathTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "resistor network is invalid"):
             require_valid_reference_calibration(diagnostics)
+
+    def test_wrong_entered_rc_rr_ratio_fails_with_measured_ratio(self) -> None:
+        config = MeasurementConfig(
+            sample_rate=48000,
+            duration=1.0,
+            reference_resistor=10.0,
+            calibration_resistor=20.0,
+            f_min=20.0,
+            f_max=20000.0,
+            points=128,
+        )
+        actual_reference_resistor = 15.0
+        signal = np.random.default_rng(3).normal(0.0, 0.2, 48000)
+        transfer = config.calibration_resistor / (
+            actual_reference_resistor + config.calibration_resistor
+        )
+
+        with self.assertWarns(RuntimeWarning):
+            _, _, _, diagnostics = estimate_reference_resistor(
+                signal,
+                signal * transfer,
+                config,
+                np.ones(config.points, dtype=np.complex128),
+            )
+
+        with self.assertRaises(ValueError) as caught:
+            require_valid_reference_calibration(diagnostics)
+
+        message = str(caught.exception)
+        self.assertIn("Entered Rc/Rr: 2", message)
+        self.assertIn("measured Rc/Rr: 1.333", message)
+        self.assertIn("difference: 33.3%", message)
+
+    def test_five_percent_rc_rr_ratio_error_is_allowed(self) -> None:
+        config = MeasurementConfig(
+            sample_rate=48000,
+            duration=1.0,
+            reference_resistor=10.0,
+            calibration_resistor=20.0,
+            f_min=20.0,
+            f_max=20000.0,
+            points=128,
+        )
+        entered_ratio = config.calibration_resistor / config.reference_resistor
+        measured_ratio = entered_ratio * 1.05
+        actual_reference = config.calibration_resistor / measured_ratio
+        signal = np.random.default_rng(4).normal(0.0, 0.2, 48000)
+        transfer = config.calibration_resistor / (
+            actual_reference + config.calibration_resistor
+        )
+
+        _, _, _, diagnostics = estimate_reference_resistor(
+            signal,
+            signal * transfer,
+            config,
+            np.ones(config.points, dtype=np.complex128),
+        )
+
+        require_valid_reference_calibration(diagnostics)
 
     def test_fit_series_rl_model(self) -> None:
         frequency = np.geomspace(20.0, 20000.0, 128)
@@ -526,6 +719,22 @@ class ImpedanceStateTests(unittest.TestCase):
             MeasurementState.CALIBRATED,
         )
 
+    def test_calibration_publishes_calibration_resistor_impedance(self) -> None:
+        self.complete_calibration()
+
+        snapshot = self.state.snapshot()
+
+        self.assertIsNotNone(snapshot.frequency)
+        self.assertIsNotNone(snapshot.impedance)
+        self.assertAlmostEqual(
+            float(np.median(np.abs(snapshot.impedance))),
+            self.calibration_resistor,
+            places=5,
+        )
+        self.assertIn("showing measured Rcal", snapshot.status)
+        self.assertFalse(snapshot.modeling)
+        self.assertIsNone(snapshot.spice_values)
+
     def test_state_workflow(self) -> None:
         self.assertEqual(
             self.state.snapshot().state,
@@ -549,8 +758,94 @@ class ImpedanceStateTests(unittest.TestCase):
             self.load_resistance,
             places=5,
         )
-        self.assertIsNotNone(snapshot.spice_values)
+        self.assertIsNone(snapshot.spice_values)
+        self.assertTrue(self.state.request_spice_model())
+        self.state.wait(10)
+        self.assertIsNotNone(self.state.snapshot().spice_values)
         self.assertEqual(snapshot.levels, (0.0, 0.0))
+
+    def test_measurement_can_be_stopped(self) -> None:
+        self.complete_calibration()
+        recording_started = Event()
+        release_recording = Event()
+        original_recorder = self.state._recorder
+
+        def blocking_recorder(signal, config, level_callback):
+            recording_started.set()
+            release_recording.wait(5)
+            return original_recorder(signal, config, level_callback)
+
+        self.state._recorder = blocking_recorder
+        self.assertTrue(self.state.start_measurement(self.config))
+        self.assertTrue(recording_started.wait(5))
+
+        self.assertTrue(self.state.stop_measurement())
+        self.assertIn("Stopping", self.state.snapshot().status)
+        release_recording.set()
+        self.state.wait(10)
+
+        snapshot = self.state.snapshot()
+        self.assertEqual(snapshot.state, MeasurementState.CALIBRATED)
+        self.assertEqual(snapshot.status, "Measurement stopped")
+        self.assertIsNotNone(snapshot.frequency)
+        self.assertIsNotNone(snapshot.impedance)
+        self.assertFalse(self.state.stop_measurement())
+
+    def test_spice_model_is_calculated_only_when_requested(self) -> None:
+        self.complete_calibration()
+        fit_started = Event()
+        release_fit = Event()
+
+        def delayed_fit(*args, **kwargs):
+            fit_started.set()
+            release_fit.wait(5)
+            return fit_impedance_auto(*args, **kwargs)
+
+        with patch(
+            "spectrum_app.impedance.imp_measure.fit_impedance_auto",
+            side_effect=delayed_fit,
+        ):
+            self.assertTrue(self.state.start_measurement(self.config))
+            self.state.wait(10)
+            snapshot = self.state.snapshot()
+            self.assertIsNotNone(snapshot.frequency)
+            self.assertFalse(snapshot.modeling)
+            self.assertIsNone(snapshot.spice_values)
+
+            self.assertTrue(self.state.request_spice_model())
+            self.assertTrue(fit_started.wait(5))
+
+            snapshot = self.state.snapshot()
+            self.assertEqual(
+                snapshot.state,
+                MeasurementState.MEASURING_COMPLETED,
+            )
+            self.assertIsNotNone(snapshot.frequency)
+            self.assertIsNotNone(snapshot.impedance)
+            self.assertTrue(snapshot.modeling)
+            self.assertIsNone(snapshot.spice_values)
+
+            release_fit.set()
+            self.state.wait(10)
+
+        snapshot = self.state.snapshot()
+        self.assertFalse(snapshot.modeling)
+        self.assertIsNotNone(snapshot.spice_values)
+
+    def test_new_measurement_discards_previous_spice_model(self) -> None:
+        self.complete_calibration()
+        self.assertTrue(self.state.start_measurement(self.config))
+        self.state.wait(10)
+        self.assertTrue(self.state.request_spice_model())
+        self.state.wait(10)
+        self.assertIsNotNone(self.state.snapshot().spice_values)
+
+        self.assertTrue(self.state.start_measurement(self.config))
+        snapshot = self.state.snapshot()
+
+        self.assertEqual(snapshot.state, MeasurementState.MEASURING)
+        self.assertIsNone(snapshot.spice_values)
+        self.state.wait(10)
 
     def test_settings_change_requires_recalibration(self) -> None:
         self.complete_calibration()

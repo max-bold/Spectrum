@@ -1,4 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
 from time import monotonic
 from typing import Any
 
@@ -25,10 +28,16 @@ if __package__:
         WindowFunction,
         export_impedance_plot,
         impedance_axis_limits,
+        phase_axis_limits,
         phase_plot_data,
         resolve_sample_rate,
     )
     from .spice_table import SPICE_SECTION_COUNT, SpiceModelTable
+    from .project import (
+        ensure_project_extension,
+        load_impedance_project,
+        save_impedance_project,
+    )
 else:
     from imp_measure import (
         CalibrationStage,
@@ -39,10 +48,16 @@ else:
         WindowFunction,
         export_impedance_plot,
         impedance_axis_limits,
+        phase_axis_limits,
         phase_plot_data,
         resolve_sample_rate,
     )
     from spice_table import SPICE_SECTION_COUNT, SpiceModelTable
+    from project import (
+        ensure_project_extension,
+        load_impedance_project,
+        save_impedance_project,
+    )
 
 
 @dataclass
@@ -57,6 +72,7 @@ class ImpedanceUi:
     impedance_axis: int | str
     phase_axis: int | str
     calibrate_button: int | str
+    test_button: int | str
     measure_button: int | str
     status_text: int | str
     error_dialog: int | str
@@ -67,9 +83,17 @@ class ImpedanceUi:
     calibration_continue_button: int | str
     calibration_cancel_button: int | str
     io_menu_item: int | str
+    open_project_menu_item: int | str
+    save_project_menu_item: int | str
+    spice_menu_item: int | str
     phase_angle_menu_item: int | str
     phase_derivative_menu_item: int | str
     io_dialog: int | str
+    open_project_dialog: int | str
+    save_project_dialog: int | str
+    spice_dialog: int | str
+    spice_status_text: int | str
+    spice_close_button: int | str
     input_combo: int | str
     output_combo: int | str
     block_size_input: int | str
@@ -77,6 +101,13 @@ class ImpedanceUi:
     capture_settings: tuple[int | str, ...]
     filter_settings: tuple[int | str, ...]
     phase_mode: PhaseDisplayMode = PhaseDisplayMode.ANGLE
+    plot_data_token: int | None = None
+    unlock_impedance_axis_frames: int = 0
+    unlock_phase_axis_frames: int = 0
+    project_path: Path | None = None
+    project_worker: Thread | None = None
+    project_results: Queue = field(default_factory=Queue)
+    project_busy: bool = False
     revision: int = -1
     last_io_update: float = 0.0
 
@@ -106,10 +137,45 @@ def bind_ui(ui: ImpedanceUi, export_dialog: int | str) -> None:
         callback=start_measurement,
         user_data=ui,
     )
+    dpg.configure_item(
+        ui.test_button,
+        callback=toggle_test_signal,
+        user_data=ui,
+    )
     dpg.configure_item(export_dialog, callback=export_plot, user_data=ui)
+    dpg.configure_item(
+        ui.open_project_menu_item,
+        callback=show_open_project_dialog,
+        user_data=ui,
+    )
+    dpg.configure_item(
+        ui.save_project_menu_item,
+        callback=save_project_menu,
+        user_data=ui,
+    )
+    dpg.configure_item(
+        ui.open_project_dialog,
+        callback=open_project,
+        user_data=ui,
+    )
+    dpg.configure_item(
+        ui.save_project_dialog,
+        callback=save_project_as,
+        user_data=ui,
+    )
     dpg.configure_item(
         ui.io_menu_item,
         callback=show_io_settings,
+        user_data=ui,
+    )
+    dpg.configure_item(
+        ui.spice_menu_item,
+        callback=show_spice_model,
+        user_data=ui,
+    )
+    dpg.configure_item(
+        ui.spice_close_button,
+        callback=close_spice_model,
         user_data=ui,
     )
     dpg.configure_item(
@@ -231,9 +297,25 @@ def cancel_calibration(sender, app_data, user_data: ImpedanceUi) -> None:
 
 def start_measurement(sender, app_data, user_data: ImpedanceUi) -> None:
     try:
+        if user_data.state.snapshot().state == MeasurementState.MEASURING:
+            user_data.state.stop_measurement()
+            return
         if not pause_io_updater(user_data):
             raise ValueError("Audio device scan did not stop")
         user_data.state.start_measurement(build_config(user_data))
+    except (TypeError, ValueError) as exc:
+        show_error(user_data, exc)
+
+
+def toggle_test_signal(sender, app_data, user_data: ImpedanceUi) -> None:
+    try:
+        if user_data.state.snapshot().testing:
+            user_data.state.stop_test_signal()
+            return
+        if not pause_io_updater(user_data):
+            raise ValueError("Audio device scan did not stop")
+        if not user_data.state.start_test_signal(build_config(user_data)):
+            raise ValueError("Could not start the test signal now")
     except (TypeError, ValueError) as exc:
         show_error(user_data, exc)
 
@@ -259,8 +341,195 @@ def set_phase_display(sender, app_data, user_data) -> None:
     update_plot(ui, ui.state.snapshot())
 
 
+def configure_phase_axis(
+    ui: ImpedanceUi,
+    mode: PhaseDisplayMode,
+    phase: Any,
+) -> None:
+    if mode == PhaseDisplayMode.ANGLE:
+        dpg.set_axis_limits(ui.phase_axis, -180.0, 180.0)
+        ui.unlock_phase_axis_frames = 0
+        return
+    lower, upper = phase_axis_limits(phase)
+    dpg.set_axis_limits(ui.phase_axis, lower, upper)
+    ui.unlock_phase_axis_frames = 2
+
+
+def update_pending_axis_limits(ui: ImpedanceUi) -> None:
+    if ui.unlock_impedance_axis_frames > 0:
+        ui.unlock_impedance_axis_frames -= 1
+        if ui.unlock_impedance_axis_frames == 0:
+            dpg.set_axis_limits_auto(ui.impedance_axis)
+
+    if ui.unlock_phase_axis_frames > 0:
+        ui.unlock_phase_axis_frames -= 1
+        if ui.unlock_phase_axis_frames == 0:
+            dpg.set_axis_limits_auto(ui.phase_axis)
+
+
 def show_export_dialog(sender, app_data, user_data) -> None:
     dpg.show_item(user_data)
+
+
+def show_open_project_dialog(
+    sender,
+    app_data,
+    user_data: ImpedanceUi,
+) -> None:
+    dpg.show_item(user_data.open_project_dialog)
+
+
+def save_project_menu(sender, app_data, user_data: ImpedanceUi) -> None:
+    dpg.show_item(user_data.save_project_dialog)
+
+
+def save_project_as(sender, app_data: dict, user_data: ImpedanceUi) -> None:
+    path = project_path_from_dialog(app_data, ensure_extension=True)
+    if path is None:
+        show_error(user_data, "Cannot resolve the BMI project path")
+        return
+    dpg.hide_item(user_data.save_project_dialog)
+    start_project_save(user_data, path)
+
+
+def open_project(sender, app_data: dict, user_data: ImpedanceUi) -> None:
+    path = project_path_from_dialog(app_data, ensure_extension=False)
+    if path is None:
+        show_error(user_data, "Cannot resolve the BMI project path")
+        return
+    dpg.hide_item(user_data.open_project_dialog)
+    start_project_open(user_data, path)
+
+
+def start_project_save(ui: ImpedanceUi, path: Path) -> None:
+    if ui.project_busy:
+        return
+    try:
+        project = ui.state.export_project(ui.phase_mode)
+    except ValueError as exc:
+        show_error(ui, exc)
+        return
+    ui.project_busy = True
+    ui.revision = -1
+    dpg.set_value(ui.status_text, f"Saving BMI project: {path}")
+    worker = Thread(
+        target=_project_save_worker,
+        args=(ui, path, project),
+        daemon=True,
+    )
+    ui.project_worker = worker
+    worker.start()
+
+
+def start_project_open(ui: ImpedanceUi, path: Path) -> None:
+    if ui.project_busy:
+        return
+    ui.project_busy = True
+    ui.revision = -1
+    dpg.set_value(ui.status_text, f"Opening BMI project: {path}")
+    worker = Thread(
+        target=_project_open_worker,
+        args=(ui, path),
+        daemon=True,
+    )
+    ui.project_worker = worker
+    worker.start()
+
+
+def _project_save_worker(ui: ImpedanceUi, path: Path, project) -> None:
+    try:
+        saved_path = save_impedance_project(path, project)
+    except Exception as exc:
+        ui.project_results.put(("save", path, None, str(exc)))
+        return
+    ui.project_results.put(("save", saved_path, None, None))
+
+
+def _project_open_worker(ui: ImpedanceUi, path: Path) -> None:
+    try:
+        project = load_impedance_project(path)
+    except Exception as exc:
+        ui.project_results.put(("open", path, None, str(exc)))
+        return
+    ui.project_results.put(("open", path, project, None))
+
+
+def process_project_results(ui: ImpedanceUi) -> None:
+    while True:
+        try:
+            operation, path, project, error = ui.project_results.get_nowait()
+        except Empty:
+            return
+        ui.project_busy = False
+        ui.project_worker = None
+        ui.revision = -1
+        if error is not None:
+            show_error(ui, f"BMI project {operation} failed:\n{error}")
+            continue
+        if operation == "save":
+            ui.project_path = path
+            dpg.set_value(ui.status_text, f"BMI project saved: {path}")
+            continue
+        try:
+            ui.state.restore_project(project)
+            apply_project_controls(ui, project)
+        except (TypeError, ValueError) as exc:
+            show_error(ui, f"BMI project open failed:\n{exc}")
+            continue
+        ui.project_path = path
+        ui.plot_data_token = None
+        ui.revision = -1
+
+
+def apply_project_controls(ui: ImpedanceUi, project) -> None:
+    config = project.result_config or project.calibration_config
+    dpg.set_value("band_input", [int(config.f_min), int(config.f_max)])
+    dpg.set_value("impedance_duration_input", config.duration)
+    dpg.set_value("reference_resistor_input", config.reference_resistor)
+    dpg.set_value("calibration_resistor_input", config.calibration_resistor)
+    dpg.set_value("impedance_window_width_input", config.window_width)
+    dpg.set_value("impedance_freq_length_input", config.points)
+    dpg.set_value(
+        "impedance_window_func_input",
+        config.window_function.value,
+    )
+    ui.settings.audio.block_size = config.block_size
+    ui.settings.save()
+    dpg.set_value(ui.block_size_input, config.block_size)
+    ui.phase_mode = project.phase_mode
+    dpg.set_value(
+        ui.phase_angle_menu_item,
+        project.phase_mode == PhaseDisplayMode.ANGLE,
+    )
+    dpg.set_value(
+        ui.phase_derivative_menu_item,
+        project.phase_mode == PhaseDisplayMode.DERIVATIVE,
+    )
+
+
+def project_path_from_dialog(
+    app_data: dict,
+    *,
+    ensure_extension: bool,
+) -> Path | None:
+    file_path = app_data.get("file_path_name")
+    if file_path:
+        path = Path(file_path)
+        if (
+            str(file_path).endswith(("\\", "/"))
+            or (path.exists() and path.is_dir())
+        ):
+            file_name = app_data.get("file_name")
+            if not file_name:
+                return None
+            path /= file_name
+    else:
+        current_path = app_data.get("current_path")
+        file_name = app_data.get("file_name")
+        if not current_path or not file_name:
+            return None
+        path = Path(current_path) / file_name
+    return ensure_project_extension(path) if ensure_extension else path
 
 
 def show_io_settings(sender, app_data, user_data: ImpedanceUi) -> None:
@@ -273,6 +542,20 @@ def show_io_settings(sender, app_data, user_data: ImpedanceUi) -> None:
 def close_io_settings(sender, app_data, user_data: ImpedanceUi) -> None:
     pause_io_updater(user_data)
     dpg.hide_item(user_data.io_dialog)
+
+
+def show_spice_model(sender, app_data, user_data: ImpedanceUi) -> None:
+    snapshot = user_data.state.snapshot()
+    if snapshot.frequency is None or snapshot.impedance is None:
+        show_error(user_data, "No measurement available for SPICE modeling")
+        return
+    dpg.show_item(user_data.spice_dialog)
+    if snapshot.spice_values is None and not snapshot.modeling:
+        user_data.state.request_spice_model()
+
+
+def close_spice_model(sender, app_data, user_data: ImpedanceUi) -> None:
+    dpg.hide_item(user_data.spice_dialog)
 
 
 def show_error(ui: ImpedanceUi, error: Exception | str) -> None:
@@ -377,6 +660,8 @@ def export_plot(sender, app_data: dict, user_data: ImpedanceUi) -> None:
 def sync_ui(ui: ImpedanceUi) -> None:
     ui.input_level_meter.resize()
     ui.spice_table.resize()
+    update_pending_axis_limits(ui)
+    process_project_results(ui)
     if dpg.is_item_shown(ui.io_dialog):
         sync_io_settings(ui)
     elif ui.io_updater.enable.is_set():
@@ -411,14 +696,58 @@ def sync_ui(ui: ImpedanceUi) -> None:
         MeasurementState.CALIBRATING,
         MeasurementState.MEASURING,
     )
-    busy = acquiring or snapshot.processing
+    busy = (
+        acquiring
+        or snapshot.processing
+        or snapshot.testing
+        or ui.project_busy
+    )
     can_measure = snapshot.state in (
         MeasurementState.CALIBRATED,
         MeasurementState.MEASURING_COMPLETED,
     )
     dpg.configure_item(ui.calibrate_button, enabled=not busy)
-    dpg.configure_item(ui.measure_button, enabled=can_measure and not busy)
+    dpg.configure_item(
+        ui.measure_button,
+        enabled=(
+            snapshot.state == MeasurementState.MEASURING
+            or (can_measure and not busy)
+        ),
+    )
+    dpg.configure_item(
+        ui.test_button,
+        enabled=not acquiring and not snapshot.processing,
+    )
     dpg.configure_item(ui.io_menu_item, enabled=not busy)
+    project_operation_active = (
+        snapshot.state == MeasurementState.MEASURING
+        or snapshot.calibration_stage in (
+            CalibrationStage.CHANNELS,
+            CalibrationStage.REFERENCE,
+        )
+        or snapshot.processing
+        or snapshot.testing
+        or snapshot.modeling
+    )
+    dpg.configure_item(
+        ui.open_project_menu_item,
+        enabled=not project_operation_active and not ui.project_busy,
+    )
+    dpg.configure_item(
+        ui.save_project_menu_item,
+        enabled=(
+            snapshot.project_available
+            and not project_operation_active
+            and not ui.project_busy
+        ),
+    )
+    dpg.configure_item(
+        ui.spice_menu_item,
+        enabled=(
+            snapshot.state == MeasurementState.MEASURING_COMPLETED
+            and not acquiring
+        ),
+    )
     dpg.configure_item(
         ui.calibrate_button,
         label=(
@@ -430,10 +759,14 @@ def sync_ui(ui: ImpedanceUi) -> None:
     dpg.configure_item(
         ui.measure_button,
         label=(
-            "Measuring..."
+            "Stop"
             if snapshot.state == MeasurementState.MEASURING
             else "Measure"
         ),
+    )
+    dpg.configure_item(
+        ui.test_button,
+        label=("Stop test" if snapshot.testing else "Test"),
     )
     for item in ui.capture_settings:
         dpg.configure_item(item, enabled=not busy)
@@ -447,7 +780,12 @@ def sync_ui(ui: ImpedanceUi) -> None:
     ui.input_level_meter.set_levels(*snapshot.levels)
 
     if snapshot.frequency is not None and snapshot.impedance is not None:
-        update_plot(ui, snapshot)
+        plot_data_token = hash(snapshot.frequency.tobytes()) ^ hash(
+            snapshot.impedance.tobytes()
+        )
+        if plot_data_token != ui.plot_data_token:
+            update_plot(ui, snapshot)
+            ui.plot_data_token = plot_data_token
     elif snapshot.state in (
         MeasurementState.UNCALIBRATED,
         MeasurementState.CALIBRATING,
@@ -455,6 +793,7 @@ def sync_ui(ui: ImpedanceUi) -> None:
     ):
         dpg.set_value(ui.impedance_line, [[], []])
         dpg.set_value(ui.phase_line, [[], []])
+        ui.plot_data_token = None
 
     if snapshot.spice_values is not None:
         ui.spice_table.set_values(
@@ -462,15 +801,20 @@ def sync_ui(ui: ImpedanceUi) -> None:
             snapshot.spice_values.sections,
             snapshot.spice_values.r1,
         )
-    elif snapshot.state in (
-        MeasurementState.UNCALIBRATED,
-        MeasurementState.CALIBRATING,
-        MeasurementState.MEASURING,
-    ):
+    else:
         ui.spice_table.set_values(
             "",
             tuple(("", "", "") for _ in range(SPICE_SECTION_COUNT)),
             "",
+        )
+    if snapshot.modeling:
+        dpg.set_value(ui.spice_status_text, "Calculating SPICE model...")
+    elif snapshot.spice_values is not None:
+        dpg.set_value(ui.spice_status_text, "SPICE model ready")
+    else:
+        dpg.set_value(
+            ui.spice_status_text,
+            "No model calculated for the current measurement",
         )
 
 
@@ -495,5 +839,5 @@ def update_plot(ui: ImpedanceUi, snapshot) -> None:
         impedance_min,
         impedance_max,
     )
-    dpg.set_axis_limits_auto(ui.phase_axis)
-    dpg.fit_axis_data(ui.phase_axis)
+    ui.unlock_impedance_axis_frames = 2
+    configure_phase_axis(ui, ui.phase_mode, phase)

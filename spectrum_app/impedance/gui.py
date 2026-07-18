@@ -68,6 +68,23 @@ def impedance_ui(
         dpg.add_file_extension(".png", parent=export_dialog)
         dpg.add_file_extension(".jpg", parent=export_dialog)
         dpg.add_file_extension(".jpeg", parent=export_dialog)
+        open_project_dialog = dpg.add_file_dialog(
+            show=False,
+            modal=True,
+            width=700,
+            height=400,
+            tag="impedance_open_project_dialog",
+        )
+        dpg.add_file_extension(".bmi", parent=open_project_dialog)
+        save_project_dialog = dpg.add_file_dialog(
+            show=False,
+            modal=True,
+            width=700,
+            height=400,
+            default_filename="measurement.bmi",
+            tag="impedance_save_project_dialog",
+        )
+        dpg.add_file_extension(".bmi", parent=save_project_dialog)
         with dpg.window(
             label="IO Settings",
             show=False,
@@ -112,19 +129,20 @@ def impedance_ui(
             modal=True,
             no_resize=True,
             no_close=True,
-            no_scrollbar=True,
             width=680,
-            height=230,
+            height=290,
             tag="impedance_error_dialog",
         ) as error_dialog:
-            error_text = dpg.add_input_text(
-                multiline=True,
-                readonly=True,
-                no_horizontal_scroll=True,
+            with dpg.child_window(
                 width=-1,
-                height=155,
-                tag="impedance_error_text",
-            )
+                height=215,
+                horizontal_scrollbar=False,
+            ):
+                error_text = dpg.add_text(
+                    "",
+                    wrap=640,
+                    tag="impedance_error_text",
+                )
             error_close_button = dpg.add_button(
                 label="OK",
                 width=-1,
@@ -138,17 +156,20 @@ def impedance_ui(
             no_close=True,
             no_scrollbar=True,
             width=560,
-            height=265,
+            height=285,
             tag="impedance_calibration_dialog",
         ) as calibration_dialog:
-            calibration_text = dpg.add_input_text(
-                multiline=True,
-                readonly=True,
-                no_horizontal_scroll=True,
+            with dpg.child_window(
                 width=-1,
-                height=180,
-                tag="impedance_calibration_text",
-            )
+                height=200,
+                horizontal_scrollbar=False,
+                no_scrollbar=True,
+            ):
+                calibration_text = dpg.add_text(
+                    "",
+                    wrap=520,
+                    tag="impedance_calibration_text",
+                )
             with dpg.group(horizontal=True):
                 calibration_continue_button = dpg.add_button(
                     label="Start",
@@ -160,9 +181,45 @@ def impedance_ui(
                     width=268,
                     tag="impedance_calibration_cancel",
                 )
+        with dpg.window(
+            label="SPICE Model",
+            show=False,
+            no_scrollbar=True,
+            width=1100,
+            height=175,
+            tag="impedance_spice_dialog",
+        ) as spice_dialog:
+            spice_status_text = dpg.add_text(
+                "Open a measurement to calculate its SPICE model",
+                tag="impedance_spice_status",
+            )
+            with dpg.child_window(
+                width=-1,
+                height=SPICE_TABLE_HEIGHT,
+                border=False,
+                no_scrollbar=True,
+            ) as spice_table_cell:
+                spice_table = add_spice_model_table(
+                    spice_table_cell,
+                    spice_table_cell,
+                )
+            spice_close_button = dpg.add_button(
+                label="Close",
+                width=-1,
+                tag="impedance_spice_close",
+            )
 
         with dpg.menu_bar():
             with dpg.menu(label="File"):
+                open_project_menu_item = dpg.add_menu_item(
+                    label="Open",
+                    tag="impedance_open_project_menu",
+                )
+                save_project_menu_item = dpg.add_menu_item(
+                    label="Save",
+                    tag="impedance_save_project_menu",
+                )
+                dpg.add_separator()
                 dpg.add_menu_item(
                     label="Export Plot",
                     callback=cbs.show_export_dialog,
@@ -187,6 +244,12 @@ def impedance_ui(
                         default_value=False,
                         tag="impedance_phase_derivative_menu",
                     )
+            with dpg.menu(label="Tools"):
+                spice_menu_item = dpg.add_menu_item(
+                    label="SPICE",
+                    enabled=False,
+                    tag="impedance_spice_menu",
+                )
 
         layout_group = dpg.add_group(
             horizontal=False,
@@ -216,7 +279,7 @@ def impedance_ui(
                 with dpg.plot(
                     label="Impedance` Plot",
                     width=-1,
-                    height=-(SPICE_TABLE_HEIGHT + GRAPH_TABLE_SPACING),
+                    height=-1,
                 ) as impedance_plot:
                     with dpg.plot_axis(
                         dpg.mvXAxis,
@@ -235,9 +298,11 @@ def impedance_ui(
                             label="Impedance",
                         )
                     with dpg.plot_axis(
-                        dpg.mvYAxis,
+                        dpg.mvYAxis2,
                         label="Phase (deg)",
                         tag="phase_axis",
+                        opposite=True,
+                        no_side_switch=True,
                     ) as phase_axis:
                         dpg.set_axis_limits(phase_axis, -180, 180)
                         phase_graph = dpg.add_line_series(
@@ -246,11 +311,6 @@ def impedance_ui(
                             label="Phase",
                             parent=phase_axis,
                         )
-                spice_table = add_spice_model_table(
-                    graph_cell,
-                    impedance_plot,
-                )
-
             with dpg.child_window(
                 width=METER_WIDTH,
                 height=-1,
@@ -261,7 +321,7 @@ def impedance_ui(
                 input_level_meter = add_input_level_meter(
                     meter_cell,
                     impedance_plot,
-                    SPICE_TABLE_HEIGHT + GRAPH_TABLE_SPACING,
+                    0,
                 )
 
             with dpg.child_window(
@@ -274,6 +334,12 @@ def impedance_ui(
                 calibrate_button = dpg.add_button(
                     label="Calibrate",
                     tag="calibrate_btn",
+                    width=-1,
+                    height=30,
+                )
+                test_button = dpg.add_button(
+                    label="Test",
+                    tag="impedance_test_btn",
                     width=-1,
                     height=30,
                 )
@@ -297,7 +363,7 @@ def impedance_ui(
                     )
                     dpg.add_text("Duration, s")
                     duration_input = dpg.add_input_float(
-                        default_value=5.0,
+                        default_value=20.0,
                         min_value=0.1,
                         min_clamped=True,
                         step=0,
@@ -372,6 +438,7 @@ def impedance_ui(
         impedance_axis=yaxis,
         phase_axis=phase_axis,
         calibrate_button=calibrate_button,
+        test_button=test_button,
         measure_button=measure_button,
         status_text=status_text,
         error_dialog=error_dialog,
@@ -382,9 +449,17 @@ def impedance_ui(
         calibration_continue_button=calibration_continue_button,
         calibration_cancel_button=calibration_cancel_button,
         io_menu_item=io_menu_item,
+        open_project_menu_item=open_project_menu_item,
+        save_project_menu_item=save_project_menu_item,
+        spice_menu_item=spice_menu_item,
         phase_angle_menu_item=phase_angle_menu_item,
         phase_derivative_menu_item=phase_derivative_menu_item,
         io_dialog=io_dialog,
+        open_project_dialog=open_project_dialog,
+        save_project_dialog=save_project_dialog,
+        spice_dialog=spice_dialog,
+        spice_status_text=spice_status_text,
+        spice_close_button=spice_close_button,
         input_combo=input_combo,
         output_combo=output_combo,
         block_size_input=block_size_input,
@@ -417,5 +492,6 @@ if __name__ == "__main__":
             cbs.sync_ui(ui)
             dpg.render_dearpygui_frame()
     finally:
+        ui.state.stop_test_signal()
         ui.io_updater.enable.clear()
         dpg.destroy_context()

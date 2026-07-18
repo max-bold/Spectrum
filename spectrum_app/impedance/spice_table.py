@@ -8,7 +8,8 @@ SPICE_TABLE_HEIGHT = 100
 SPICE_HEADER_HEIGHT = 26
 SPICE_ROW_HEIGHT = 24
 SPICE_ROW_LABEL_WIDTH = 24
-SPICE_TEXT_SIZE = 11
+SPICE_TEXT_SIZE = 15
+DPG_DEFAULT_TEXT_SIZE = 13
 SPICE_HEADERS = (
     "",
     "L1",
@@ -184,6 +185,9 @@ class SpiceModelTable:
         tag: str,
     ) -> None:
         text_width, text_height = dpg.get_text_size(text)
+        scale = SPICE_TEXT_SIZE / DPG_DEFAULT_TEXT_SIZE
+        text_width *= scale
+        text_height *= scale
         self.drawing_items.append(
             dpg.draw_text(
                 (

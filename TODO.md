@@ -23,6 +23,8 @@ v0.2.3
 v0.2.4
 - Get Apple Developer credentials for macOS Developer ID signing and notarization
 - Fix missing microphone permission prompt on macOS Tahoe arm64 builds
+- Fix manual zoom/pan for the impedance Phase/Dir secondary Y-axis; automatic scaling already works
+- Verify SPICE model fitting against real impedance measurements
 
 v0.3
 - Implement multi-record mode with averaging

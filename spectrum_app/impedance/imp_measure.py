@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import math
 import warnings
+from copy import deepcopy
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, current_thread
 from time import monotonic, sleep
 from typing import Callable
 
@@ -24,6 +25,8 @@ MAX_FILTER_WINDOW_WIDTH = 3.0
 LEVEL_UPDATE_RATE = 12.0
 LEVEL_UPDATE_INTERVAL = 1.0 / LEVEL_UPDATE_RATE
 LEVEL_SMOOTHING = 0.35
+CHANNEL_CALIBRATION_DURATION = 5.0
+LEVEL_TEST_LOOP_DURATION = 1.0
 CHANNEL_SIMILARITY_THRESHOLD = 0.9
 CHANNEL_SIMILARITY_MAX_DELAY_SECONDS = 0.02
 CHANNEL_CALIBRATION_TONES = 12
@@ -31,6 +34,8 @@ CHANNEL_TONE_ENERGY_RATIO_MIN = 0.75
 CHANNEL_GAIN_PROFILE_STD_MAX_DB = 3.0
 CHANNEL_GAIN_PROFILE_PEAK_MAX_DB = 8.0
 CHANNEL_PHASE_RESIDUAL_RMS_MAX_DEG = 35.0
+REFERENCE_RESISTIVE_IMAG_RATIO_MAX = 0.05
+CALIBRATION_RATIO_ERROR_MAX = 0.05
 
 
 class MeasurementState(str, Enum):
@@ -60,10 +65,14 @@ class PhaseDisplayMode(str, Enum):
     DERIVATIVE = "derivative"
 
 
+class MeasurementCancelled(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class MeasurementConfig:
     sample_rate: int = 48000
-    duration: float = 5.0
+    duration: float = 20.0
     reference_resistor: float = 3.25
     calibration_resistor: float = 10.4
     f_min: float = 20.0
@@ -123,16 +132,53 @@ class SpiceTableValues:
 
 
 @dataclass(frozen=True)
+class ImpedanceProjectData:
+    state: MeasurementState
+    calibration_stage: CalibrationStage
+    phase_mode: PhaseDisplayMode
+    calibration_config: MeasurementConfig
+    result_config: MeasurementConfig | None
+    channel_calibration_recording: np.ndarray
+    channel_calibration_recording_sample_rate: int
+    channel_calibration_signal: np.ndarray
+    channel_calibration_signal_sample_rate: int
+    calibration_recording: np.ndarray | None
+    calibration_recording_sample_rate: int | None
+    calibration_signal: np.ndarray | None
+    calibration_signal_sample_rate: int | None
+    measurement_recording: np.ndarray | None
+    measurement_recording_sample_rate: int | None
+    measurement_signal: np.ndarray | None
+    measurement_signal_sample_rate: int | None
+    calibration_frequency: np.ndarray | None
+    calibration_impedance: np.ndarray | None
+    calibration_phase: np.ndarray | None
+    calibration_phase_derivative: np.ndarray | None
+    channel_correction: np.ndarray
+    reference_resistor_estimated: float | None
+    reference_diagnostics: dict[str, object] | None
+    frequency: np.ndarray | None
+    impedance: np.ndarray | None
+    phase: np.ndarray | None
+    phase_derivative: np.ndarray | None
+    fit_result: FitResult | None
+    spice_values: SpiceTableValues | None
+
+
+@dataclass(frozen=True)
 class AppSnapshot:
     state: MeasurementState
     calibration_stage: CalibrationStage
     processing: bool
+    modeling: bool
+    testing: bool
     status: str
     error: str | None
     levels: tuple[float, float]
     frequency: np.ndarray | None
     impedance: np.ndarray | None
     spice_values: SpiceTableValues | None
+    project_available: bool
     revision: int
 
 
@@ -175,12 +221,16 @@ class ImpedanceAppState:
         self._level_peaks = (0.0, 0.0)
         self._last_level_update: float | None = None
         self._channel_calibration_recording: np.ndarray | None = None
+        self._channel_calibration_signal: np.ndarray | None = None
         self._calibration_recording: np.ndarray | None = None
+        self._calibration_signal: np.ndarray | None = None
         self._measurement_recording: np.ndarray | None = None
+        self._measurement_signal: np.ndarray | None = None
         self._channel_correction: np.ndarray | None = None
         self._reference_resistor_estimated: float | None = None
         self._reference_diagnostics: dict[str, object] | None = None
         self._calibration_frequency: np.ndarray | None = None
+        self._calibration_impedance: np.ndarray | None = None
         self._calibration_config: MeasurementConfig | None = None
         self._frequency: np.ndarray | None = None
         self._impedance: np.ndarray | None = None
@@ -189,7 +239,14 @@ class ImpedanceAppState:
         self._result_config: MeasurementConfig | None = None
         self._revision = 0
         self._worker: Thread | None = None
+        self._measurement_stop: Event | None = None
         self._reprocess_worker: Thread | None = None
+        self._model_workers: set[Thread] = set()
+        self._model_generation = 0
+        self._modeling = False
+        self._test_worker: Thread | None = None
+        self._test_stop: Event | None = None
+        self._testing = False
         self._pending_reprocess: MeasurementConfig | None = None
         self._processing = False
 
@@ -199,14 +256,215 @@ class ImpedanceAppState:
                 state=self._state,
                 calibration_stage=self._calibration_stage,
                 processing=self._processing,
+                modeling=self._modeling,
+                testing=self._testing,
                 status=self._status,
                 error=self._error,
                 levels=self._levels,
                 frequency=None if self._frequency is None else self._frequency.copy(),
                 impedance=None if self._impedance is None else self._impedance.copy(),
                 spice_values=self._spice_values,
+                project_available=(
+                    self._calibration_config is not None
+                    and self._channel_calibration_recording is not None
+                    and self._channel_calibration_signal is not None
+                    and self._channel_correction is not None
+                    and self._state in (
+                        MeasurementState.CALIBRATING,
+                        MeasurementState.CALIBRATED,
+                        MeasurementState.MEASURING_COMPLETED,
+                    )
+                ),
                 revision=self._revision,
             )
+
+    def export_project(
+        self,
+        phase_mode: PhaseDisplayMode,
+    ) -> ImpedanceProjectData:
+        with self._lock:
+            if (
+                self._processing
+                or self._testing
+                or self._modeling
+                or self._state == MeasurementState.MEASURING
+                or self._calibration_stage in (
+                    CalibrationStage.CHANNELS,
+                    CalibrationStage.REFERENCE,
+                )
+            ):
+                raise ValueError("Cannot save a project while an operation is active")
+            if (
+                self._calibration_config is None
+                or self._channel_calibration_recording is None
+                or self._channel_calibration_signal is None
+                or self._channel_correction is None
+            ):
+                raise ValueError("Complete calibration stage 1 before saving")
+            if self._state not in (
+                MeasurementState.CALIBRATING,
+                MeasurementState.CALIBRATED,
+                MeasurementState.MEASURING_COMPLETED,
+            ):
+                raise ValueError("There is no impedance project to save")
+
+            frequency = _copy_optional_array(self._frequency)
+            impedance = _copy_optional_array(self._impedance)
+            phase = (
+                None
+                if impedance is None
+                else current_phase_angle(impedance)
+            )
+            derivative = (
+                None
+                if frequency is None or impedance is None
+                else current_phase_derivative(frequency, impedance)
+            )
+            fit_result = _copy_fit_result(self._fit_result)
+            config = self._calibration_config
+            result_config = self._result_config
+            project = ImpedanceProjectData(
+                state=self._state,
+                calibration_stage=self._calibration_stage,
+                phase_mode=phase_mode,
+                calibration_config=config,
+                result_config=result_config,
+                channel_calibration_recording=(
+                    self._channel_calibration_recording.copy()
+                ),
+                channel_calibration_recording_sample_rate=config.sample_rate,
+                channel_calibration_signal=self._channel_calibration_signal.copy(),
+                channel_calibration_signal_sample_rate=config.sample_rate,
+                calibration_recording=_copy_optional_array(
+                    self._calibration_recording
+                ),
+                calibration_recording_sample_rate=(
+                    None
+                    if self._calibration_recording is None
+                    else config.sample_rate
+                ),
+                calibration_signal=_copy_optional_array(self._calibration_signal),
+                calibration_signal_sample_rate=(
+                    None
+                    if self._calibration_signal is None
+                    else config.sample_rate
+                ),
+                measurement_recording=_copy_optional_array(
+                    self._measurement_recording
+                ),
+                measurement_recording_sample_rate=(
+                    None
+                    if self._measurement_recording is None
+                    else (result_config or config).sample_rate
+                ),
+                measurement_signal=_copy_optional_array(self._measurement_signal),
+                measurement_signal_sample_rate=(
+                    None
+                    if self._measurement_signal is None
+                    else (result_config or config).sample_rate
+                ),
+                calibration_frequency=_copy_optional_array(
+                    self._calibration_frequency
+                ),
+                calibration_impedance=_copy_optional_array(
+                    self._calibration_impedance
+                ),
+                calibration_phase=(
+                    None
+                    if self._calibration_impedance is None
+                    else current_phase_angle(self._calibration_impedance)
+                ),
+                calibration_phase_derivative=(
+                    None
+                    if (
+                        self._calibration_frequency is None
+                        or self._calibration_impedance is None
+                    )
+                    else current_phase_derivative(
+                        self._calibration_frequency,
+                        self._calibration_impedance,
+                    )
+                ),
+                channel_correction=self._channel_correction.copy(),
+                reference_resistor_estimated=self._reference_resistor_estimated,
+                reference_diagnostics=deepcopy(self._reference_diagnostics),
+                frequency=frequency,
+                impedance=impedance,
+                phase=phase,
+                phase_derivative=derivative,
+                fit_result=fit_result,
+                spice_values=self._spice_values,
+            )
+        validate_impedance_project_data(project)
+        return project
+
+    def restore_project(self, project: ImpedanceProjectData) -> None:
+        validate_impedance_project_data(project)
+        with self._lock:
+            if (
+                self._state == MeasurementState.MEASURING
+                or self._calibration_stage in (
+                    CalibrationStage.CHANNELS,
+                    CalibrationStage.REFERENCE,
+                )
+                or self._processing
+                or self._testing
+                or self._modeling
+                or any(worker.is_alive() for worker in self._model_workers)
+            ):
+                raise ValueError("Cannot open a project while an operation is active")
+
+            self._state = project.state
+            self._calibration_stage = project.calibration_stage
+            self._status = _loaded_project_status(project)
+            self._error = None
+            self._levels = (0.0, 0.0)
+            self._reset_level_filter_locked()
+            self._channel_calibration_recording = (
+                project.channel_calibration_recording.copy()
+            )
+            self._channel_calibration_signal = (
+                project.channel_calibration_signal.copy()
+            )
+            self._calibration_recording = _copy_optional_array(
+                project.calibration_recording
+            )
+            self._calibration_signal = _copy_optional_array(
+                project.calibration_signal
+            )
+            self._measurement_recording = _copy_optional_array(
+                project.measurement_recording
+            )
+            self._measurement_signal = _copy_optional_array(
+                project.measurement_signal
+            )
+            self._channel_correction = project.channel_correction.copy()
+            self._reference_resistor_estimated = (
+                project.reference_resistor_estimated
+            )
+            self._reference_diagnostics = deepcopy(
+                project.reference_diagnostics
+            )
+            self._calibration_frequency = _copy_optional_array(
+                project.calibration_frequency
+            )
+            self._calibration_impedance = _copy_optional_array(
+                project.calibration_impedance
+            )
+            self._calibration_config = project.calibration_config
+            self._frequency = _copy_optional_array(project.frequency)
+            self._impedance = _copy_optional_array(project.impedance)
+            self._fit_result = _copy_fit_result(project.fit_result)
+            self._spice_values = project.spice_values
+            self._result_config = project.result_config
+            self._pending_reprocess = None
+            self._processing = False
+            self._model_generation += 1
+            self._modeling = False
+            self._worker = None
+            self._reprocess_worker = None
+            self._model_workers.clear()
+            self._revision += 1
 
     def invalidate_calibration(
         self,
@@ -216,7 +474,7 @@ class ImpedanceAppState:
             if self._state in (
                 MeasurementState.CALIBRATING,
                 MeasurementState.MEASURING,
-            ) or self._processing:
+            ) or self._processing or self._testing:
                 return False
             self._state = MeasurementState.UNCALIBRATED
             self._calibration_stage = CalibrationStage.IDLE
@@ -225,17 +483,23 @@ class ImpedanceAppState:
             self._levels = (0.0, 0.0)
             self._reset_level_filter_locked()
             self._channel_calibration_recording = None
+            self._channel_calibration_signal = None
             self._calibration_recording = None
+            self._calibration_signal = None
             self._measurement_recording = None
+            self._measurement_signal = None
             self._channel_correction = None
             self._reference_resistor_estimated = None
             self._reference_diagnostics = None
             self._calibration_frequency = None
+            self._calibration_impedance = None
             self._calibration_config = None
             self._frequency = None
             self._impedance = None
             self._fit_result = None
             self._spice_values = None
+            self._model_generation += 1
+            self._modeling = False
             self._result_config = None
             self._pending_reprocess = None
             self._revision += 1
@@ -247,24 +511,30 @@ class ImpedanceAppState:
             if self._state in (
                 MeasurementState.CALIBRATING,
                 MeasurementState.MEASURING,
-            ) or self._processing:
+            ) or self._processing or self._testing:
                 return False
             self._state = MeasurementState.CALIBRATING
             self._calibration_stage = CalibrationStage.CHANNELS
             self._status = "Calibrating input channels..."
             self._error = None
             self._channel_calibration_recording = None
+            self._channel_calibration_signal = None
             self._calibration_recording = None
+            self._calibration_signal = None
             self._measurement_recording = None
+            self._measurement_signal = None
             self._channel_correction = None
             self._reference_resistor_estimated = None
             self._reference_diagnostics = None
             self._calibration_frequency = None
+            self._calibration_impedance = None
             self._calibration_config = None
             self._frequency = None
             self._impedance = None
             self._fit_result = None
             self._spice_values = None
+            self._model_generation += 1
+            self._modeling = False
             self._result_config = None
             self._pending_reprocess = None
             self._processing = False
@@ -306,7 +576,9 @@ class ImpedanceAppState:
             self._calibration_stage = CalibrationStage.IDLE
             self._status = "Calibration cancelled"
             self._channel_calibration_recording = None
+            self._channel_calibration_signal = None
             self._calibration_recording = None
+            self._calibration_signal = None
             self._channel_correction = None
             self._reference_resistor_estimated = None
             self._reference_diagnostics = None
@@ -320,7 +592,7 @@ class ImpedanceAppState:
             if self._state not in (
                 MeasurementState.CALIBRATED,
                 MeasurementState.MEASURING_COMPLETED,
-            ) or self._processing:
+            ) or self._processing or self._testing:
                 return False
             if (
                 self._channel_correction is None
@@ -345,18 +617,34 @@ class ImpedanceAppState:
             self._impedance = None
             self._fit_result = None
             self._spice_values = None
+            self._model_generation += 1
+            self._modeling = False
             self._result_config = None
             self._measurement_recording = None
+            self._measurement_signal = None
             self._pending_reprocess = None
             self._processing = False
             self._levels = (0.0, 0.0)
             self._reset_level_filter_locked()
+            stop_event = Event()
+            self._measurement_stop = stop_event
             self._revision += 1
         self._start_worker(
             self._measurement_worker,
             config,
+            stop_event,
         )
         return True
+
+    def stop_measurement(self) -> bool:
+        with self._lock:
+            stop_event = self._measurement_stop
+            if self._state != MeasurementState.MEASURING or stop_event is None:
+                return False
+            self._status = "Stopping measurement..."
+            self._revision += 1
+            stop_event.set()
+            return True
 
     def request_reprocess(self, config: MeasurementConfig) -> bool:
         config.validate()
@@ -364,7 +652,7 @@ class ImpedanceAppState:
             if self._state in (
                 MeasurementState.CALIBRATING,
                 MeasurementState.MEASURING,
-            ):
+            ) or self._testing:
                 return False
             if (
                 self._calibration_config is not None
@@ -383,6 +671,10 @@ class ImpedanceAppState:
                 return False
             self._pending_reprocess = config
             self._processing = True
+            self._fit_result = None
+            self._spice_values = None
+            self._model_generation += 1
+            self._modeling = False
             self._status = "Reprocessing measurement..."
             self._error = None
             self._revision += 1
@@ -394,6 +686,31 @@ class ImpedanceAppState:
             worker.start()
             return True
 
+    def request_spice_model(self) -> bool:
+        with self._lock:
+            if (
+                self._state != MeasurementState.MEASURING_COMPLETED
+                or self._frequency is None
+                or self._impedance is None
+                or self._result_config is None
+            ):
+                return False
+            if self._modeling or self._spice_values is not None:
+                return True
+            frequency = self._frequency.copy()
+            impedance = self._impedance.copy()
+            config = self._result_config
+            generation = self._model_generation
+            self._status = "Calculating SPICE model..."
+            self._revision += 1
+        self._start_model_fit(
+            frequency,
+            impedance,
+            config,
+            generation,
+        )
+        return True
+
     def wait(self, timeout: float | None = None) -> None:
         worker = self._worker
         if worker is not None:
@@ -401,6 +718,47 @@ class ImpedanceAppState:
         reprocess_worker = self._reprocess_worker
         if reprocess_worker is not None:
             reprocess_worker.join(timeout)
+        for model_worker in tuple(self._model_workers):
+            model_worker.join(timeout)
+        test_worker = self._test_worker
+        if test_worker is not None:
+            test_worker.join(timeout)
+
+    def start_test_signal(self, config: MeasurementConfig) -> bool:
+        config.validate()
+        with self._lock:
+            if self._state in (
+                MeasurementState.CALIBRATING,
+                MeasurementState.MEASURING,
+            ) or self._processing or self._testing:
+                return False
+            stop_event = Event()
+            self._test_stop = stop_event
+            self._testing = True
+            self._status = "Test signal running"
+            self._error = None
+            self._levels = (0.0, 0.0)
+            self._reset_level_filter_locked()
+            self._revision += 1
+        worker = Thread(
+            target=self._test_signal_worker,
+            args=(config, stop_event),
+            daemon=True,
+        )
+        with self._lock:
+            self._test_worker = worker
+        worker.start()
+        return True
+
+    def stop_test_signal(self) -> bool:
+        with self._lock:
+            stop_event = self._test_stop
+            if stop_event is None or not self._testing:
+                return False
+            self._status = "Stopping test signal..."
+            self._revision += 1
+            stop_event.set()
+        return True
 
     def _start_worker(self, target: Callable, *args: object) -> None:
         worker = Thread(target=target, args=args, daemon=True)
@@ -409,10 +767,11 @@ class ImpedanceAppState:
 
     def _channel_calibration_worker(self, config: MeasurementConfig) -> None:
         try:
+            channel_config = channel_calibration_config(config)
             signal = generate_channel_calibration_signal(config)
             recording = self._recorder(
                 signal,
-                config,
+                channel_config,
                 self._update_levels,
             )
             self._clear_levels()
@@ -421,13 +780,14 @@ class ImpedanceAppState:
             frequency, channel_correction = calculate_channel_correction(
                 recording[:, 0],
                 recording[:, 1],
-                config,
+                channel_config,
             )
             validate_channel_correction(channel_correction)
             with self._lock:
                 self._levels = (0.0, 0.0)
                 self._reset_level_filter_locked()
                 self._channel_calibration_recording = recording.copy()
+                self._channel_calibration_signal = signal.copy()
                 self._calibration_frequency = frequency
                 self._channel_correction = channel_correction
                 self._calibration_config = config
@@ -452,7 +812,7 @@ class ImpedanceAppState:
                 channel_correction = self._channel_correction.copy()
             (
                 frequency,
-                _,
+                reference_resistor_by_frequency,
                 reference_resistor,
                 diagnostics,
             ) = estimate_reference_resistor(
@@ -462,17 +822,27 @@ class ImpedanceAppState:
                 channel_correction,
             )
             require_valid_reference_calibration(diagnostics)
+            calibration_impedance = calculate_calibration_impedance(
+                reference_resistor_by_frequency,
+                reference_resistor,
+                config.calibration_resistor,
+            )
             with self._lock:
                 self._levels = (0.0, 0.0)
                 self._reset_level_filter_locked()
                 self._calibration_recording = recording.copy()
+                self._calibration_signal = signal.copy()
                 self._calibration_frequency = frequency
+                self._calibration_impedance = calibration_impedance.copy()
                 self._reference_resistor_estimated = reference_resistor
                 self._reference_diagnostics = diagnostics
+                self._frequency = frequency
+                self._impedance = calibration_impedance
                 self._calibration_stage = CalibrationStage.IDLE
                 self._state = MeasurementState.CALIBRATED
                 self._status = (
-                    f"Calibrated, Rref = {reference_resistor:.4g} Ohm"
+                    f"Calibrated, Rref = {reference_resistor:.4g} Ohm; "
+                    "showing measured Rcal Z/phase"
                 )
                 self._revision += 1
         except Exception as exc:
@@ -481,46 +851,74 @@ class ImpedanceAppState:
     def _measurement_worker(
         self,
         config: MeasurementConfig,
+        stop_event: Event,
     ) -> None:
         try:
             signal = generate_measurement_signal(config)
-            recording = self._recorder(
-                signal,
-                config,
-                self._update_levels,
-            )
+            if self._recorder is play_and_record:
+                recording = self._recorder(
+                    signal,
+                    config,
+                    self._update_levels,
+                    stop_event,
+                )
+            else:
+                recording = self._recorder(
+                    signal,
+                    config,
+                    self._update_levels,
+                )
+            _raise_if_measurement_cancelled(stop_event)
             self._clear_levels()
             recording = trim_recording(recording, len(signal))
             analyze_recording_levels(recording, raise_on_clipping=True)
+            _raise_if_measurement_cancelled(stop_event)
             with self._lock:
                 channel_calibration_recording = (
                     self._channel_calibration_recording.copy()
                 )
                 calibration_recording = self._calibration_recording.copy()
                 self._measurement_recording = recording.copy()
-            frequency, impedance, fit_result, spice_values = (
-                self._process_recordings(
-                    channel_calibration_recording,
-                    calibration_recording,
-                    recording,
-                    config,
-                )
+                self._measurement_signal = signal.copy()
+            frequency, impedance = self._process_recordings(
+                channel_calibration_recording,
+                calibration_recording,
+                recording,
+                config,
             )
+            _raise_if_measurement_cancelled(stop_event)
             with self._lock:
                 self._levels = (0.0, 0.0)
                 self._reset_level_filter_locked()
                 self._frequency = frequency
                 self._impedance = impedance
-                self._fit_result = fit_result
-                self._spice_values = spice_values
                 self._result_config = config
                 self._state = MeasurementState.MEASURING_COMPLETED
-                self._status = (
-                    f"Measurement completed, {fit_result.sections} SPICE sections"
+                self._status = "Measurement completed"
+                self._revision += 1
+        except MeasurementCancelled:
+            with self._lock:
+                self._levels = (0.0, 0.0)
+                self._reset_level_filter_locked()
+                self._measurement_recording = None
+                self._measurement_signal = None
+                self._frequency = _copy_optional_array(
+                    self._calibration_frequency
                 )
+                self._impedance = _copy_optional_array(
+                    self._calibration_impedance
+                )
+                self._result_config = None
+                self._state = MeasurementState.CALIBRATED
+                self._status = "Measurement stopped"
+                self._error = None
                 self._revision += 1
         except Exception as exc:
             self._fail(MeasurementState.CALIBRATED, exc)
+        finally:
+            with self._lock:
+                if self._measurement_stop is stop_event:
+                    self._measurement_stop = None
 
     def _reprocess_loop(self) -> None:
         while True:
@@ -540,13 +938,11 @@ class ImpedanceAppState:
                     self._revision += 1
                 return
             try:
-                frequency, impedance, fit_result, spice_values = (
-                    self._process_recordings(
-                        channel_calibration_recording,
-                        calibration_recording,
-                        measurement_recording,
-                        config,
-                    )
+                frequency, impedance = self._process_recordings(
+                    channel_calibration_recording,
+                    calibration_recording,
+                    measurement_recording,
+                    config,
                 )
             except Exception as exc:
                 with self._lock:
@@ -563,17 +959,12 @@ class ImpedanceAppState:
                     continue
                 self._frequency = frequency
                 self._impedance = impedance
-                self._fit_result = fit_result
-                self._spice_values = spice_values
                 self._result_config = config
                 self._processing = False
                 self._reprocess_worker = None
-                self._status = (
-                    f"Measurement reprocessed, {fit_result.sections} "
-                    "SPICE sections"
-                )
+                self._status = "Measurement reprocessed"
                 self._revision += 1
-                return
+            return
 
     @staticmethod
     def _process_recordings(
@@ -581,11 +972,12 @@ class ImpedanceAppState:
         calibration_recording: np.ndarray,
         measurement_recording: np.ndarray,
         config: MeasurementConfig,
-    ) -> tuple[np.ndarray, np.ndarray, FitResult, SpiceTableValues]:
+    ) -> tuple[np.ndarray, np.ndarray]:
+        channel_config = channel_calibration_config(config)
         _, channel_correction = calculate_channel_correction(
             channel_calibration_recording[:, 0],
             channel_calibration_recording[:, 1],
-            config,
+            channel_config,
         )
         validate_channel_correction(channel_correction)
         _, _, reference_resistor, diagnostics = estimate_reference_resistor(
@@ -602,19 +994,98 @@ class ImpedanceAppState:
             channel_correction,
             reference_resistor,
         )
-        fit_result, _ = fit_impedance_auto(
-            frequency,
-            np.abs(impedance),
-            min_sections=config.spice_min_sections,
-            max_sections=config.spice_max_sections,
-            max_evaluations=config.spice_max_evaluations,
+        return frequency, impedance
+
+    def _start_model_fit(
+        self,
+        frequency: np.ndarray,
+        impedance: np.ndarray,
+        config: MeasurementConfig,
+        generation: int,
+    ) -> None:
+        worker = Thread(
+            target=self._model_fit_worker,
+            args=(
+                frequency.copy(),
+                impedance.copy(),
+                config,
+                generation,
+            ),
+            daemon=True,
         )
-        return (
-            frequency,
-            impedance,
-            fit_result,
-            format_spice_table(fit_result),
-        )
+        with self._lock:
+            if generation != self._model_generation:
+                return
+            self._modeling = True
+            self._model_workers.add(worker)
+            self._revision += 1
+        worker.start()
+
+    def _model_fit_worker(
+        self,
+        frequency: np.ndarray,
+        impedance: np.ndarray,
+        config: MeasurementConfig,
+        generation: int,
+    ) -> None:
+        worker = current_thread()
+        try:
+            fit_result, _ = fit_impedance_auto(
+                frequency,
+                np.abs(impedance),
+                min_sections=config.spice_min_sections,
+                max_sections=config.spice_max_sections,
+                max_evaluations=config.spice_max_evaluations,
+            )
+            spice_values = format_spice_table(fit_result)
+            with self._lock:
+                if generation == self._model_generation:
+                    self._fit_result = fit_result
+                    self._spice_values = spice_values
+                    self._modeling = False
+                    self._status = (
+                        "Measurement completed, "
+                        f"{fit_result.sections} SPICE sections"
+                    )
+                    self._revision += 1
+        except Exception as exc:
+            with self._lock:
+                if generation == self._model_generation:
+                    self._modeling = False
+                    self._status = "SPICE model calculation failed"
+                    self._error = str(exc) or exc.__class__.__name__
+                    self._revision += 1
+        finally:
+            with self._lock:
+                self._model_workers.discard(worker)
+
+    def _test_signal_worker(
+        self,
+        config: MeasurementConfig,
+        stop_event: Event,
+    ) -> None:
+        try:
+            play_test_signal(config, stop_event, self._update_levels)
+            with self._lock:
+                if self._test_stop is stop_event:
+                    self._testing = False
+                    self._test_stop = None
+                    self._test_worker = None
+                    self._status = "Test signal stopped"
+                    self._levels = (0.0, 0.0)
+                    self._reset_level_filter_locked()
+                    self._revision += 1
+        except Exception as exc:
+            with self._lock:
+                if self._test_stop is stop_event:
+                    self._testing = False
+                    self._test_stop = None
+                    self._test_worker = None
+                    self._status = "Test signal failed"
+                    self._error = str(exc) or exc.__class__.__name__
+                    self._levels = (0.0, 0.0)
+                    self._reset_level_filter_locked()
+                    self._revision += 1
 
     def _fail(self, fallback: MeasurementState, exc: Exception) -> None:
         with self._lock:
@@ -684,11 +1155,16 @@ def generate_measurement_signal(config: MeasurementConfig) -> np.ndarray:
     return signal.astype(np.float32)
 
 
+def channel_calibration_config(config: MeasurementConfig) -> MeasurementConfig:
+    return replace(config, duration=CHANNEL_CALIBRATION_DURATION)
+
+
 def channel_calibration_frequencies(
     config: MeasurementConfig,
 ) -> np.ndarray:
     config.validate()
-    resolution = 1.0 / config.duration
+    duration = CHANNEL_CALIBRATION_DURATION
+    resolution = 1.0 / duration
     low = max(config.f_min, 4.0 * resolution)
     high = min(config.f_max, config.sample_rate * 0.45)
     if high <= low:
@@ -706,8 +1182,9 @@ def channel_calibration_frequencies(
 def generate_channel_calibration_signal(
     config: MeasurementConfig,
 ) -> np.ndarray:
-    frequencies = channel_calibration_frequencies(config)
-    samples = int(round(config.sample_rate * config.duration))
+    channel_config = channel_calibration_config(config)
+    frequencies = channel_calibration_frequencies(channel_config)
+    samples = int(round(channel_config.sample_rate * channel_config.duration))
     time = np.arange(samples, dtype=np.float64) / config.sample_rate
     indices = np.arange(frequencies.size, dtype=np.float64)
     phases = np.pi * indices * (indices - 1.0) / frequencies.size
@@ -729,11 +1206,39 @@ def generate_channel_calibration_signal(
     return signal.astype(np.float32)
 
 
+def generate_level_test_signal(config: MeasurementConfig) -> np.ndarray:
+    config.validate()
+    frequencies = np.asarray((100.0, 1000.0, 10000.0), dtype=np.float64)
+    frequencies = frequencies[frequencies < config.sample_rate * 0.45]
+    frequencies = frequencies[
+        (frequencies >= config.f_min / 2.0)
+        & (frequencies <= min(config.f_max * 2.0, config.sample_rate * 0.45))
+    ]
+    if frequencies.size == 0:
+        frequencies = np.asarray(
+            [min(max(config.f_min, 1000.0), config.sample_rate * 0.25)],
+            dtype=np.float64,
+        )
+    samples = int(round(config.sample_rate * LEVEL_TEST_LOOP_DURATION))
+    time = np.arange(samples, dtype=np.float64) / config.sample_rate
+    signal = np.sum(
+        np.sin(2.0 * np.pi * frequencies[:, None] * time[None, :]),
+        axis=0,
+    )
+    peak = float(np.max(np.abs(signal)))
+    if peak <= 0:
+        raise ValueError("Could not generate level test signal")
+    signal *= GENERATOR_AMPLITUDE / peak
+    return signal.astype(np.float32)
+
+
 def play_and_record(
     signal: np.ndarray,
     config: MeasurementConfig,
     level_callback: LevelCallback,
+    stop_event: Event | None = None,
 ) -> np.ndarray:
+    stop_event = stop_event or Event()
     mono = np.asarray(signal, dtype=np.float32).reshape(-1)
     tail_samples = int(round(config.recording_tail * config.sample_rate))
     if tail_samples:
@@ -767,6 +1272,8 @@ def play_and_record(
 
     def input_callback(indata, frames, time, status) -> None:
         nonlocal input_position
+        if stop_event.is_set():
+            raise sd.CallbackStop
         remaining = len(recording) - input_position
         active_frames = min(frames, remaining)
         if active_frames <= 0:
@@ -787,6 +1294,9 @@ def play_and_record(
 
     def output_callback(outdata, frames, time, status) -> None:
         nonlocal output_position
+        if stop_event.is_set():
+            outdata.fill(0)
+            raise sd.CallbackStop
         remaining = len(playback) - output_position
         active_frames = min(frames, remaining)
         outdata.fill(0)
@@ -838,6 +1348,7 @@ def play_and_record(
                 remaining = max(0.0, deadline - monotonic())
                 if not input_finished.wait(remaining):
                     raise TimeoutError("Audio input stream did not finish in time")
+            _raise_if_measurement_cancelled(stop_event)
             break
         except sd.PortAudioError as exc:
             if attempt == 0:
@@ -852,6 +1363,115 @@ def play_and_record(
             ) from exc
 
     return recording
+
+
+def _raise_if_measurement_cancelled(stop_event: Event) -> None:
+    if stop_event.is_set():
+        raise MeasurementCancelled
+
+
+def play_test_signal(
+    config: MeasurementConfig,
+    stop_event: Event,
+    level_callback: LevelCallback,
+) -> None:
+    mono = generate_level_test_signal(config)
+    playback = np.column_stack((mono, mono)).astype(np.float32)
+    output_position = 0
+    input_extra_settings = _wasapi_shared_settings(config.input_device)
+    output_extra_settings = _wasapi_shared_settings(config.output_device)
+
+    try:
+        sd.check_input_settings(
+            device=config.input_device,
+            channels=2,
+            dtype="float32",
+            samplerate=config.sample_rate,
+            extra_settings=input_extra_settings,
+        )
+        sd.check_output_settings(
+            device=config.output_device,
+            channels=2,
+            dtype="float32",
+            samplerate=config.sample_rate,
+            extra_settings=output_extra_settings,
+        )
+    except (sd.PortAudioError, ValueError) as exc:
+        raise ValueError(
+            f"Selected audio device settings are unsupported: {exc}"
+        ) from exc
+
+    def input_callback(indata, frames, time, status) -> None:
+        active = indata[:frames, :2]
+        level_callback(
+            (
+                float(np.max(np.abs(active[:, 0]))),
+                float(np.max(np.abs(active[:, 1]))),
+            )
+        )
+        if stop_event.is_set():
+            raise sd.CallbackStop
+
+    def output_callback(outdata, frames, time, status) -> None:
+        nonlocal output_position
+        if stop_event.is_set():
+            outdata.fill(0)
+            raise sd.CallbackStop
+
+        remaining = frames
+        write_position = 0
+        while remaining > 0:
+            chunk = min(remaining, len(playback) - output_position)
+            outdata[write_position : write_position + chunk] = playback[
+                output_position : output_position + chunk
+            ]
+            write_position += chunk
+            output_position = (output_position + chunk) % len(playback)
+            remaining -= chunk
+
+    for attempt in range(2):
+        output_position = 0
+        try:
+            with ExitStack() as streams:
+                streams.enter_context(
+                    sd.InputStream(
+                        samplerate=config.sample_rate,
+                        blocksize=config.block_size,
+                        device=config.input_device,
+                        channels=2,
+                        dtype="float32",
+                        callback=input_callback,
+                        extra_settings=input_extra_settings,
+                    )
+                )
+                streams.enter_context(
+                    sd.OutputStream(
+                        samplerate=config.sample_rate,
+                        blocksize=config.block_size,
+                        device=config.output_device,
+                        channels=2,
+                        dtype="float32",
+                        callback=output_callback,
+                        extra_settings=output_extra_settings,
+                    )
+                )
+                while not stop_event.wait(0.05):
+                    pass
+            break
+        except sd.PortAudioError as exc:
+            if stop_event.is_set():
+                break
+            if attempt == 0:
+                sd._terminate()
+                sd._initialize()
+                sleep(0.25)
+                continue
+            raise ValueError(
+                "Could not start the test signal stream after retrying. "
+                "Check the selected devices and close other applications "
+                "using it.\n\n"
+                f"PortAudio: {exc}"
+            ) from exc
 
 
 def _wasapi_shared_settings(device: int | str | None):
@@ -894,6 +1514,7 @@ def trim_recording(
 def analyze_recording_levels(
     recording: np.ndarray,
     *,
+    no_signal_threshold: float = 1e-8,
     quiet_threshold: float = 1e-4,
     clipping_threshold: float = 0.999,
     raise_on_clipping: bool = False,
@@ -904,10 +1525,20 @@ def analyze_recording_levels(
         float(np.sqrt(np.mean(np.square(data[:, index]))))
         for index in range(2)
     )
-    if raise_on_clipping and any(level >= clipping_threshold for level in peaks):
-        raise ValueError("Input clipping detected")
-    if any(level < quiet_threshold for level in rms):
-        raise ValueError("Input signal is too quiet")
+    channel_labels = ("Channel 1 (L)", "Channel 2 (R)")
+    issues: list[str] = []
+    for channel, peak, rms_level in zip(channel_labels, peaks, rms):
+        if raise_on_clipping and peak >= clipping_threshold:
+            issue = "clipping detected"
+        elif rms_level <= no_signal_threshold:
+            issue = "no signal"
+        elif rms_level < quiet_threshold:
+            issue = "signal is too quiet"
+        else:
+            continue
+        issues.append(f"{channel}: {issue}")
+    if issues:
+        raise ValueError("Input level error:\n" + "\n".join(issues))
     return peaks
 
 
@@ -1181,30 +1812,33 @@ def estimate_reference_resistor(
     config: MeasurementConfig,
     channel_correction: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, float, dict[str, object]]:
-    frequency, v1, v2 = calculate_fft_spectra(ch1, ch2, config.sample_rate)
-    frequency, v1, v2 = smooth_fft_spectra(
-        frequency,
-        v1,
-        v2,
+    frequency, measured_transfer = calculate_smoothed_transfer(
+        ch1,
+        ch2,
         config,
     )
     correction = np.asarray(channel_correction, dtype=np.complex128)
-    if correction.shape != v2.shape:
+    if correction.shape != measured_transfer.shape:
         raise ValueError(
             "Channel correction does not match reference calibration settings"
         )
 
     valid_denominator = (
-        (np.abs(v1) >= 1e-12)
+        (np.abs(measured_transfer) >= 1e-12)
         & (np.abs(correction) >= 1e-12)
         & np.isfinite(correction.real)
         & np.isfinite(correction.imag)
+        & np.isfinite(measured_transfer.real)
+        & np.isfinite(measured_transfer.imag)
     )
-    h_cal = np.full(v1.shape, np.nan + 1j * np.nan, dtype=np.complex128)
+    h_cal = np.full(
+        measured_transfer.shape,
+        np.nan + 1j * np.nan,
+        dtype=np.complex128,
+    )
     h_cal[valid_denominator] = (
-        v2[valid_denominator]
+        measured_transfer[valid_denominator]
         / correction[valid_denominator]
-        / v1[valid_denominator]
     )
     rr_by_frequency = np.full(
         h_cal.shape,
@@ -1222,13 +1856,29 @@ def estimate_reference_resistor(
         np.isfinite(rr_by_frequency.real)
         & np.isfinite(rr_by_frequency.imag)
     )
-    real_values = rr_by_frequency.real[finite]
-    imag_values = rr_by_frequency.imag[finite]
-    if real_values.size == 0:
+    if np.count_nonzero(finite) == 0:
         raise ValueError(
             "Reference resistor calibration failed: no valid frequency points"
         )
 
+    point_imag_ratio = np.full(rr_by_frequency.shape, np.inf, dtype=np.float64)
+    point_imag_ratio[finite] = np.abs(rr_by_frequency.imag[finite]) / np.maximum(
+        np.abs(rr_by_frequency.real[finite]),
+        1e-12,
+    )
+    resistive = (
+        finite
+        & (rr_by_frequency.real > 0)
+        & (point_imag_ratio <= REFERENCE_RESISTIVE_IMAG_RATIO_MAX)
+    )
+    minimum_points = max(8, int(math.ceil(config.points * 0.1)))
+    if np.count_nonzero(resistive) >= minimum_points:
+        selected = resistive
+    else:
+        selected = finite
+
+    real_values = rr_by_frequency.real[selected]
+    imag_values = rr_by_frequency.imag[selected]
     rr_estimated = float(np.median(real_values))
     real_mean = float(np.mean(real_values))
     real_std = float(np.std(real_values))
@@ -1236,46 +1886,67 @@ def estimate_reference_resistor(
     real_cv = real_std / real_scale
     imag_abs_median = float(np.median(np.abs(imag_values)))
     imag_to_real_ratio = imag_abs_median / max(abs(rr_estimated), 1e-12)
+    fullband_imag_ratio = float(
+        np.median(point_imag_ratio[finite])
+    )
     nominal_error = (
         abs(rr_estimated - config.reference_resistor)
         / config.reference_resistor
     )
+    entered_ratio = config.calibration_resistor / config.reference_resistor
+    measured_ratio = (
+        config.calibration_resistor / rr_estimated
+        if rr_estimated > 0
+        else math.inf
+    )
+    ratio_error = abs(measured_ratio - entered_ratio) / entered_ratio
 
     diagnostic_warnings: list[str] = []
-    minimum_points = max(8, int(math.ceil(config.points * 0.1)))
+    fatal_warnings: list[str] = []
     if rr_estimated <= 0:
-        diagnostic_warnings.append("estimated Rref is not positive")
-    if real_values.size < minimum_points:
-        diagnostic_warnings.append(
-            f"only {real_values.size} valid frequency points"
+        fatal_warnings.append("estimated Rref is not positive")
+    if np.count_nonzero(resistive) < minimum_points:
+        fatal_warnings.append(
+            f"only {np.count_nonzero(resistive)} resistive frequency points"
         )
-    if imag_to_real_ratio > 0.05:
+    if imag_to_real_ratio > REFERENCE_RESISTIVE_IMAG_RATIO_MAX:
+        fatal_warnings.append(
+            "selected Rref points have a significant reactive component"
+        )
+    if fullband_imag_ratio > REFERENCE_RESISTIVE_IMAG_RATIO_MAX:
         diagnostic_warnings.append(
-            "Rref has a significant reactive component"
+            "some Rref calibration frequencies have a significant reactive component"
         )
     if real_cv > 0.03:
         diagnostic_warnings.append(
             "Rref varies too much across the frequency band"
         )
-    if nominal_error > 0.05:
-        diagnostic_warnings.append(
-            "estimated Rref differs from its nominal value by more than 5%"
+    if ratio_error > CALIBRATION_RATIO_ERROR_MAX + 1e-12:
+        fatal_warnings.append(
+            "measured Rc/Rr differs from the entered ratio by more than 5%"
         )
-    for message in diagnostic_warnings:
+    for message in [*diagnostic_warnings, *fatal_warnings]:
         warnings.warn(message, RuntimeWarning, stacklevel=2)
 
     diagnostics: dict[str, object] = {
         "rr_estimated": rr_estimated,
         "rr_nominal": config.reference_resistor,
         "rr_nominal_error_rel": nominal_error,
+        "rc_rr_entered": entered_ratio,
+        "rc_rr_measured": measured_ratio,
+        "rc_rr_error_rel": ratio_error,
         "rr_real_median": rr_estimated,
         "rr_real_mean": real_mean,
         "rr_real_std": real_std,
         "rr_real_cv": real_cv,
         "rr_imag_abs_median": imag_abs_median,
         "rr_imag_to_real_ratio": imag_to_real_ratio,
-        "valid_points_count": int(real_values.size),
+        "rr_fullband_imag_to_real_ratio": fullband_imag_ratio,
+        "valid_points_count": int(np.count_nonzero(finite)),
+        "resistive_points_count": int(np.count_nonzero(resistive)),
+        "selected_points_count": int(real_values.size),
         "warnings": diagnostic_warnings,
+        "fatal_warnings": fatal_warnings,
     }
     return frequency, rr_by_frequency, rr_estimated, diagnostics
 
@@ -1283,7 +1954,7 @@ def estimate_reference_resistor(
 def require_valid_reference_calibration(
     diagnostics: dict[str, object],
 ) -> None:
-    messages = list(diagnostics.get("warnings", []))
+    messages = list(diagnostics.get("fatal_warnings", []))
     if not messages:
         return
     details = "; ".join(str(message) for message in messages)
@@ -1291,13 +1962,46 @@ def require_valid_reference_calibration(
     nominal = float(diagnostics["rr_nominal"])
     cv = float(diagnostics["rr_real_cv"])
     reactive_ratio = float(diagnostics["rr_imag_to_real_ratio"])
+    entered_ratio = float(diagnostics["rc_rr_entered"])
+    measured_ratio = float(diagnostics["rc_rr_measured"])
+    ratio_error = float(diagnostics["rc_rr_error_rel"])
     raise ValueError(
         "Calibration failed: the measured resistor network is invalid "
         f"({details}). Estimated Rref: {estimated:.4g} Ohm; "
         f"nominal: {nominal:.4g} Ohm; variation: {cv:.1%}; "
-        f"reactive ratio: {reactive_ratio:.1%}. Check that Rref and Rcal "
+        f"reactive ratio: {reactive_ratio:.1%}. "
+        f"Entered Rc/Rr: {entered_ratio:.4g}; measured Rc/Rr: "
+        f"{measured_ratio:.4g}; difference: {ratio_error:.1%}. "
+        "Check the entered resistor values and make sure Rref and Rcal "
         "are connected to the input."
     )
+
+
+def calculate_calibration_impedance(
+    reference_resistor_by_frequency: np.ndarray,
+    reference_resistor: float,
+    calibration_resistor: float,
+) -> np.ndarray:
+    reference_by_frequency = np.asarray(
+        reference_resistor_by_frequency,
+        dtype=np.complex128,
+    )
+    impedance = np.full(
+        reference_by_frequency.shape,
+        np.nan + 1j * np.nan,
+        dtype=np.complex128,
+    )
+    valid = (
+        np.isfinite(reference_by_frequency.real)
+        & np.isfinite(reference_by_frequency.imag)
+        & (np.abs(reference_by_frequency) >= 1e-12)
+    )
+    impedance[valid] = (
+        reference_resistor
+        * calibration_resistor
+        / reference_by_frequency[valid]
+    )
+    return impedance
 
 
 def calculate_impedance(
@@ -1314,18 +2018,19 @@ def calculate_impedance(
     )
     if actual_reference <= 0:
         raise ValueError("Reference resistor must be positive")
-    frequency, v1, v2 = calculate_fft_spectra(ch1, ch2, config.sample_rate)
-    frequency, v1, v2 = smooth_fft_spectra(
-        frequency,
-        v1,
-        v2,
+    frequency, measured_transfer = calculate_smoothed_transfer(
+        ch1,
+        ch2,
         config,
     )
-    valid = np.abs(v1) >= 1e-12
-    corrected_v2 = v2.copy()
+    valid = (
+        np.isfinite(measured_transfer.real)
+        & np.isfinite(measured_transfer.imag)
+    )
+    transfer = measured_transfer.copy()
     if channel_correction is not None:
         correction = np.asarray(channel_correction, dtype=np.complex128)
-        if correction.shape != v2.shape:
+        if correction.shape != measured_transfer.shape:
             raise ValueError(
                 "Channel correction does not match measurement settings"
             )
@@ -1335,10 +2040,8 @@ def calculate_impedance(
             & np.isfinite(correction.imag)
         )
         valid &= correction_valid
-        corrected_v2[correction_valid] /= correction[correction_valid]
+        transfer[correction_valid] /= correction[correction_valid]
 
-    transfer = np.full(v1.shape, np.nan + 1j * np.nan, dtype=np.complex128)
-    transfer[valid] = corrected_v2[valid] / v1[valid]
     denominator_valid = valid & (np.abs(1.0 - transfer) >= 1e-12)
     impedance = np.full(
         transfer.shape,
@@ -1351,6 +2054,27 @@ def calculate_impedance(
         / (1.0 - transfer[denominator_valid])
     )
     return frequency, impedance
+
+
+def calculate_smoothed_transfer(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    config: MeasurementConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    frequency, v1, v2 = calculate_fft_spectra(ch1, ch2, config.sample_rate)
+    transfer = np.full(v1.shape, np.nan + 1j * np.nan, dtype=np.complex128)
+    valid = np.abs(v1) >= 1e-12
+    transfer[valid] = v2[valid] / v1[valid]
+    window = Windows(config.window_function.value)
+    filtered_frequency, filtered_transfer = log_filter2(
+        frequency,
+        transfer,
+        band=(config.f_min, config.f_max),
+        window=window,
+        w=config.window_width,
+        n_output=config.points,
+    )
+    return filtered_frequency, filtered_transfer
 
 
 def smooth_fft_spectra(
@@ -1400,6 +2124,22 @@ def impedance_axis_limits(
     if maximum <= 0:
         return 0.0, 1.0
     return 0.0, maximum * (1.0 + headroom)
+
+
+def phase_axis_limits(
+    phase: np.ndarray,
+    *,
+    headroom: float = 0.05,
+) -> tuple[float, float]:
+    values = np.asarray(phase, dtype=np.float64)
+    valid = values[np.isfinite(values)]
+    if valid.size == 0:
+        return -1.0, 1.0
+    lower = float(np.min(valid))
+    upper = float(np.max(valid))
+    span = upper - lower
+    padding = span * headroom if span > 0 else max(abs(lower) * headroom, 1.0)
+    return lower - padding, upper + padding
 
 
 def current_phase_angle(impedance: np.ndarray) -> np.ndarray:
@@ -1792,6 +2532,185 @@ def _capture_signature(config: MeasurementConfig) -> tuple[object, ...]:
         config.block_size,
         config.recording_tail,
     )
+
+
+def validate_impedance_project_data(project: ImpedanceProjectData) -> None:
+    project.calibration_config.validate()
+    if project.result_config is not None:
+        project.result_config.validate()
+        if _capture_signature(project.result_config) != _capture_signature(
+            project.calibration_config
+        ):
+            raise ValueError("Project measurement settings require recalibration")
+    if project.state == MeasurementState.CALIBRATING:
+        if project.calibration_stage != CalibrationStage.WAITING_REFERENCE:
+            raise ValueError("Only calibration stage 1 can be restored")
+    elif project.state in (
+        MeasurementState.CALIBRATED,
+        MeasurementState.MEASURING_COMPLETED,
+    ):
+        if project.calibration_stage != CalibrationStage.IDLE:
+            raise ValueError("Completed calibration must use the idle stage")
+    else:
+        raise ValueError("Unsupported impedance project state")
+
+    _validate_project_capture(
+        "channel calibration",
+        project.channel_calibration_recording,
+        project.channel_calibration_recording_sample_rate,
+        project.channel_calibration_signal,
+        project.channel_calibration_signal_sample_rate,
+    )
+    if (
+        project.channel_calibration_recording_sample_rate
+        != project.calibration_config.sample_rate
+    ):
+        raise ValueError("Channel calibration sample rate does not match settings")
+    correction = np.asarray(project.channel_correction)
+    if correction.ndim != 1 or correction.size < 3:
+        raise ValueError("Invalid channel calibration correction")
+    if (
+        project.calibration_frequency is not None
+        and np.asarray(project.calibration_frequency).size != correction.size
+    ):
+        raise ValueError("Channel calibration result sizes do not match")
+
+    has_reference = project.state in (
+        MeasurementState.CALIBRATED,
+        MeasurementState.MEASURING_COMPLETED,
+    )
+    if has_reference:
+        _validate_project_capture(
+            "reference calibration",
+            project.calibration_recording,
+            project.calibration_recording_sample_rate,
+            project.calibration_signal,
+            project.calibration_signal_sample_rate,
+        )
+        if (
+            project.calibration_recording_sample_rate
+            != project.calibration_config.sample_rate
+        ):
+            raise ValueError(
+                "Reference calibration sample rate does not match settings"
+            )
+        if (
+            project.reference_resistor_estimated is None
+            or project.reference_resistor_estimated <= 0
+            or not isinstance(project.reference_diagnostics, dict)
+            or project.calibration_frequency is None
+            or project.calibration_impedance is None
+            or project.calibration_phase is None
+            or project.calibration_phase_derivative is None
+        ):
+            raise ValueError("Incomplete reference calibration results")
+        calibration_sizes = {
+            np.asarray(array).size
+            for array in (
+                project.calibration_frequency,
+                project.calibration_impedance,
+                project.calibration_phase,
+                project.calibration_phase_derivative,
+            )
+        }
+        if len(calibration_sizes) != 1:
+            raise ValueError("Calibration result sizes do not match")
+
+    if project.state == MeasurementState.MEASURING_COMPLETED:
+        if project.result_config is None:
+            raise ValueError("Measurement project has no result settings")
+        _validate_project_capture(
+            "measurement",
+            project.measurement_recording,
+            project.measurement_recording_sample_rate,
+            project.measurement_signal,
+            project.measurement_signal_sample_rate,
+        )
+        if (
+            project.measurement_recording_sample_rate
+            != project.result_config.sample_rate
+        ):
+            raise ValueError("Measurement sample rate does not match settings")
+
+    arrays = (
+        project.frequency,
+        project.impedance,
+        project.phase,
+        project.phase_derivative,
+    )
+    present = [array is not None for array in arrays]
+    if any(present) and not all(present):
+        raise ValueError("Incomplete calculated impedance results")
+    if project.state in (
+        MeasurementState.CALIBRATED,
+        MeasurementState.MEASURING_COMPLETED,
+    ) and not all(present):
+        raise ValueError("Project has no calculated impedance results")
+    if all(present):
+        sizes = {np.asarray(array).size for array in arrays}
+        if len(sizes) != 1 or np.asarray(project.frequency).ndim != 1:
+            raise ValueError("Calculated impedance result sizes do not match")
+
+    if (project.fit_result is None) != (project.spice_values is None):
+        raise ValueError("Incomplete SPICE model results")
+    if project.fit_result is not None:
+        expected = 2 + 3 * project.fit_result.sections
+        if np.asarray(project.fit_result.physical_params).size != expected:
+            raise ValueError("Invalid SPICE model parameter count")
+        if len(project.spice_values.sections) != 10:
+            raise ValueError("Invalid SPICE table section count")
+
+
+def _validate_project_capture(
+    name: str,
+    recording: np.ndarray | None,
+    recording_sample_rate: int | None,
+    signal: np.ndarray | None,
+    signal_sample_rate: int | None,
+) -> None:
+    if recording is None or signal is None:
+        raise ValueError(f"Missing {name} audio data")
+    data = np.asarray(recording)
+    generator = np.asarray(signal)
+    if data.ndim != 2 or data.shape[1] < 2 or len(data) == 0:
+        raise ValueError(f"Invalid {name} recording")
+    if generator.ndim != 1 or len(generator) == 0:
+        raise ValueError(f"Invalid {name} generator signal")
+    if len(data) != len(generator):
+        raise ValueError(f"{name.capitalize()} signal length mismatch")
+    if (
+        recording_sample_rate is None
+        or signal_sample_rate is None
+        or recording_sample_rate <= 0
+        or signal_sample_rate <= 0
+    ):
+        raise ValueError(f"Invalid {name} sample rate")
+    if recording_sample_rate != signal_sample_rate:
+        raise ValueError(f"{name.capitalize()} sample rates do not match")
+
+
+def _copy_optional_array(array: np.ndarray | None) -> np.ndarray | None:
+    return None if array is None else np.asarray(array).copy()
+
+
+def _copy_fit_result(result: FitResult | None) -> FitResult | None:
+    if result is None:
+        return None
+    return FitResult(
+        sections=result.sections,
+        physical_params=result.physical_params.copy(),
+        rms_log_error=result.rms_log_error,
+        max_abs_log_error=result.max_abs_log_error,
+        selection_score=result.selection_score,
+    )
+
+
+def _loaded_project_status(project: ImpedanceProjectData) -> str:
+    if project.state == MeasurementState.CALIBRATING:
+        return "Project loaded; connect Rref and Rcal for calibration stage 2"
+    if project.state == MeasurementState.CALIBRATED:
+        return "Calibrated project loaded; showing measured Rcal Z/phase"
+    return "Measurement project loaded"
 
 
 def _as_stereo_recording(recording: np.ndarray) -> np.ndarray:
