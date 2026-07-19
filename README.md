@@ -2,7 +2,7 @@
 
 A real-time audio spectrum analyzer built with Python and Dear PyGui, designed for audio analysis and signal processing applications.
 
-![Screenshot](info/Screenshot%202025-11-21%20201724.png)
+![Screenshot](screenshot.png)
 
 
 ## Features
@@ -17,7 +17,7 @@ A real-time audio spectrum analyzer built with Python and Dear PyGui, designed f
 
 ## Requirements
 
-- Python 3.7+
+- Python 3.10+
 - Audio interface (built-in or external)
 - Windows OS (with optional ASIO driver support)
 
@@ -71,8 +71,7 @@ The application features a dual-pane interface:
 - `spectrum_app/cbs.py` - Compatibility facade for callbacks and app state
 - `spectrum_app/` - Application state, callbacks, file I/O, analysis orchestration, and UI sync logic
 - `utils/` - Utility modules for audio processing and DSP
-- `sandbox/` - Development and testing scripts
-- `info/` - Documentation and reference materials
+- `tests/` - Automated tests for the released application
 
 ## Technical Details
 
@@ -84,8 +83,5 @@ The analyzer uses:
 
 ## Contributing
 
-This is an active development project. Feel free to explore the `sandbox/` directory for experimental features and development scripts.
-
-## License
-
-This project is open source. Please refer to the repository for license details.
+Development of new modules and the next application architecture takes place in
+the `dev` branch. The `main` branch contains the current stable application.
