@@ -1,5 +1,9 @@
 # Spectrum Analyzer
 
+> **Development branch:** `dev` contains experimental modules and the next
+> application architecture. The current stable application is available in
+> `main` and in the `v0.2.3` release.
+
 A real-time audio spectrum analyzer built with Python and Dear PyGui, designed for audio analysis and signal processing applications.
 
 ![Screenshot](info/Screenshot%202025-11-21%20201724.png)
