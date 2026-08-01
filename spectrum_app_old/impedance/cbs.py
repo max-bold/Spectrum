@@ -8,7 +8,7 @@ from typing import Any
 import dearpygui.dearpygui as dpg
 from utils.audio import io_list_updater
 
-from spectrum_app.settings import (
+from spectrum_app_old.settings import (
     AppSettings,
     DEFAULT_INPUT,
     DEFAULT_OUTPUT,

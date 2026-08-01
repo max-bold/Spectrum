@@ -8,7 +8,7 @@ import numpy as np
 import sounddevice as sd
 from utils.windows import log_filter2
 
-from spectrum_app.impedance.imp_measure import (
+from spectrum_app_old.impedance.imp_measure import (
     CHANNEL_CALIBRATION_DURATION,
     CalibrationStage,
     ImpedanceAppState,

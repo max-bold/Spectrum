@@ -18,6 +18,17 @@
             "env": {
                 "PYDEVD_USE_SYS_MONITORING": "false"
             }
+        },
+        {
+            "name": "BM Spectrum (dev)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "spectrum_app.application",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "env": {
+                "PYDEVD_USE_SYS_MONITORING": "false"
+            }
         }
     ]
 }

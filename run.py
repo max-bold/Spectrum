@@ -1,9 +1,9 @@
 import dearpygui.dearpygui as dpg
 
-from spectrum_app.gui import build_ui
-from spectrum_app.callbacks import bind_input_commit_handlers
-from spectrum_app.state import create_app_state
-from spectrum_app.ui.sync import sync_ui
+from spectrum_app_old.gui import build_ui
+from spectrum_app_old.callbacks import bind_input_commit_handlers
+from spectrum_app_old.state import create_app_state
+from spectrum_app_old.ui.sync import sync_ui
 
 
 def main() -> None:

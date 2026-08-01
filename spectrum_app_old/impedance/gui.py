@@ -15,9 +15,9 @@ else:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    from spectrum_app.impedance import cbs
-    from spectrum_app.impedance.ilm import METER_WIDTH, add_input_level_meter
-    from spectrum_app.impedance.spice_table import (
+    from spectrum_app_old.impedance import cbs
+    from spectrum_app_old.impedance.ilm import METER_WIDTH, add_input_level_meter
+    from spectrum_app_old.impedance.spice_table import (
         SPICE_TABLE_HEIGHT,
         add_spice_model_table,
     )

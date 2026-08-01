@@ -4,14 +4,14 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from spectrum_app.impedance.imp_measure import (
+from spectrum_app_old.impedance.imp_measure import (
     CalibrationStage,
     ImpedanceAppState,
     MeasurementConfig,
     MeasurementState,
     PhaseDisplayMode,
 )
-from spectrum_app.impedance.project import (
+from spectrum_app_old.impedance.project import (
     load_impedance_project,
     save_impedance_project,
 )

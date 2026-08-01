@@ -16,7 +16,7 @@ from time import sleep
 from typing import Literal, NamedTuple
 
 from .generators import log_sweep, pink_noise
-from spectrum_app.models import GenMode, RefMode
+from spectrum_app_old.models import GenMode, RefMode
 
 # Platform detection for Windows-specific functionality
 WIN32 = sys.platform == "win32"

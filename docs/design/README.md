@@ -7,6 +7,7 @@ the next Spectrum application architecture.
 
 - [Development process](development-process.md)
 - [Architecture](architecture.md)
+- [Audio analysis library](audioanalysis.md)
 - [Accepted decisions](decisions.md)
 
 ## Status

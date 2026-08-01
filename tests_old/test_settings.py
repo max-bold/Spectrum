@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from spectrum_app.settings import (
+from spectrum_app_old.settings import (
     AppSettings,
     AudioSettings,
     DEFAULT_INPUT,

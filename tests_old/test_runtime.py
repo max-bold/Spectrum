@@ -4,8 +4,8 @@ from unittest.mock import patch
 import dearpygui.dearpygui as dpg
 import numpy as np
 
-from spectrum_app.runtime import run_analyzer
-from spectrum_app.state import AppState
+from spectrum_app_old.runtime import run_analyzer
+from spectrum_app_old.state import AppState
 
 
 class RuntimeTests(unittest.TestCase):

@@ -3,8 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from spectrum_app.impedance import cbs
-from spectrum_app.impedance.imp_measure import (
+from spectrum_app_old.impedance import cbs
+from spectrum_app_old.impedance.imp_measure import (
     MeasurementConfig,
     MeasurementState,
     PhaseDisplayMode,

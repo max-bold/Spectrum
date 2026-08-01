@@ -40,6 +40,11 @@ A measurement module owns:
 
 Modules must not depend directly on other measurement modules.
 
+Reusable signal-processing algorithms belong to the independent
+`audioanalysis` package. Measurement modules compose those algorithms with
+application state, audio sessions, and UI instead of maintaining private DSP
+implementations.
+
 ## Object lifetime
 
 A module describes a measurement type and is not the storage for one particular

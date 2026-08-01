@@ -8,7 +8,7 @@ from unittest.mock import patch
 import dearpygui.dearpygui as dpg
 import numpy as np
 
-from spectrum_app.files import (
+from spectrum_app_old.files import (
     LegacyProjectError,
     PROJECT_PROGRESS_DIALOG,
     PROJECT_PROGRESS_BAR,
@@ -33,9 +33,9 @@ from spectrum_app.files import (
     update_project_progress,
     validate_project,
 )
-from spectrum_app.state import AppState
-from spectrum_app.ui.sync import flush_project_warning, sync_record_selection
-from spectrum_app.callbacks import record_used_click
+from spectrum_app_old.state import AppState
+from spectrum_app_old.ui.sync import flush_project_warning, sync_record_selection
+from spectrum_app_old.callbacks import record_used_click
 
 
 def drain_project_results(state: AppState) -> None:

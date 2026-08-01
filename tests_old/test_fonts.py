@@ -2,7 +2,7 @@ import unittest
 
 import dearpygui.dearpygui as dpg
 
-from spectrum_app.fonts import bind_app_font, find_app_font
+from spectrum_app_old.fonts import bind_app_font, find_app_font
 
 
 class FontTests(unittest.TestCase):

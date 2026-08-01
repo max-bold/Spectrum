@@ -25,6 +25,12 @@
 ## Dependencies and resources
 
 - Modules do not import or control other measurement modules directly.
+- Reusable DSP, measurement math, generators, and neutral result types are
+  developed in `audioanalysis` and consumed by the application modules.
+- `audioanalysis` must remain independent of Dear PyGui, `SpectrumApplication`,
+  project files, and module-specific UI state.
+- Application code must not duplicate algorithms already exposed by
+  `audioanalysis`.
 - Physical audio I/O belongs to the application core and is exposed through an
   abstract application-level interface.
 - DPG calls are confined to UI-facing application and view code; background

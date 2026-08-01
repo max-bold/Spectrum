@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from spectrum_app.analysis import record_levels
+from spectrum_app_old.analysis import record_levels
 
 
 class RecordLevelTests(unittest.TestCase):
