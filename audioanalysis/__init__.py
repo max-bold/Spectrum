@@ -9,6 +9,7 @@ from .generators import (
     white_noise,
 )
 from .levels import as_channels, normalize_peak, peak_levels
+from .phase import break_phase_wraps, phase_derivative, wrap_phase
 from .smoothing import SmoothingWindow, grid_smooth, log_smooth, log_window
 from .spectrum import (
     AnalysisMethod,
@@ -34,6 +35,7 @@ __all__ = [
     "SpectrumResult",
     "analyze_spectrum",
     "as_channels",
+    "break_phase_wraps",
     "grid_smooth",
     "list_devices",
     "log_chirp",
@@ -42,6 +44,8 @@ __all__ = [
     "magnitude_db",
     "normalize_peak",
     "peak_levels",
+    "phase_derivative",
+    "wrap_phase",
     "phase_degrees",
     "pink_noise",
     "pink_noise_zi",

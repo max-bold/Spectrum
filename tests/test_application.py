@@ -2,6 +2,7 @@ import unittest
 
 from spectrum_app import SpectrumApplication
 from spectrum_app.core.model import AppState
+from spectrum_app.core.settings import AppSettings
 
 
 class RecordingApplication(SpectrumApplication):
@@ -27,6 +28,15 @@ class SpectrumApplicationTests(unittest.TestCase):
         app = SpectrumApplication()
 
         self.assertIsInstance(app.app_state, AppState)
+        self.assertIsInstance(app.settings, AppSettings)
+
+    def test_settings_changes_request_plot_redraw(self) -> None:
+        app = SpectrumApplication()
+        app.app_state.graph_data_changed = False
+
+        app.settings.phase_unit = "deg/dec"
+
+        self.assertTrue(app.app_state.graph_data_changed)
 
     def test_create_measurement_uses_default_module_and_makes_it_active(self) -> None:
         app = SpectrumApplication()

@@ -7,9 +7,9 @@ from spectrum_app.core.model import AppState, AxisSpec, GraphData, Measurement
 
 class CoreModelTests(unittest.TestCase):
     def test_measurement_can_store_multiple_graphs(self) -> None:
-        frequency = AxisSpec("frequency", "Hz", "log")
-        level = AxisSpec("level", "dB")
-        phase = AxisSpec("phase", "degree")
+        frequency = AxisSpec.FREQ
+        level = AxisSpec.LEVEL
+        phase = AxisSpec.PHASE
         measurement = Measurement(module_id="spectrum", name="Measurement 1")
 
         measurement.graphs.append(

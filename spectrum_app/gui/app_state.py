@@ -125,12 +125,14 @@ class AppStatePanel:
                 if graph_id not in graph_ids
             ]
 
+        self.app.app_state.graph_data_changed = True
         dpg.set_value(sender, self._measurement_is_visible(measurement))
 
     def _set_measurement_name(
         self, sender: int | str, name: str, measurement_id: str
     ) -> None:
         self._find_measurement(measurement_id).name = name
+        self.app.app_state.graph_data_changed = True
 
     def _sync_active_measurement_checkboxes(self) -> None:
         active_id = self.app.app_state.active_measurement_id

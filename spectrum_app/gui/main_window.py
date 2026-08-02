@@ -4,6 +4,8 @@ import dearpygui.dearpygui as dpg
 
 from spectrum_app.gui.app_state import AppStatePanel
 from spectrum_app.gui.measurement import MeasurementPanel
+from spectrum_app.gui.plot import Plot
+from spectrum_app.gui.settings import SettingsWindow
 
 if TYPE_CHECKING:
     from spectrum_app.application import SpectrumApplication
@@ -22,7 +24,9 @@ class MainWindow:
         self.file_menu = "app::file_menu"
         self.tools_menu = "app::tools_menu"
         self.settings_menu = "app::settings_menu"
-        self.plot_host = "app::plot_host"
+        self.settings_window = SettingsWindow(app)
+        self.plot = Plot(app)
+        self.plot_host = self.plot.tag
         self.bottom_host = "app::bottom_host"
         self.control_panel_host = "app::control_panel_host"
         self.measurement_panel = MeasurementPanel(app)
@@ -43,15 +47,18 @@ class MainWindow:
                 dpg.add_menu(label="File", tag=self.file_menu)
                 dpg.add_menu(label="Tools", tag=self.tools_menu)
                 dpg.add_menu(label="Settings", tag=self.settings_menu)
+                dpg.add_menu_item(
+                    label="Application settings...",
+                    parent=self.settings_menu,
+                    callback=self.settings_window.show,
+                )
 
             with dpg.group(): #pyright: ignore[reportGeneralTypeIssues]
                     with dpg.group(horizontal=True,height=-self.BOTTOM_PANE_HEIGHT-27): #pyright: ignore[reportGeneralTypeIssues]
-                        with dpg.plot( #pyright: ignore[reportGeneralTypeIssues]
+                        self.plot.build(
                             width=-self.SIDE_PANE_WIDTH-8,
                             height=-1,
-                            tag=self.plot_host,
-                        ):
-                            pass
+                        )
                         with dpg.child_window( #pyright: ignore[reportGeneralTypeIssues]
                             width=self.SIDE_PANE_WIDTH,
                             tag=self.control_panel_host,
@@ -70,7 +77,10 @@ class MainWindow:
                             self.app_state_panel.build()
                     dpg.add_text("",tag=self.status)
 
+        self.settings_window.build()
+
     def update(self) -> None:
+        self.plot.update()
         self.measurement_panel.update()
 
     def set_status_text(self, text: str) -> None:

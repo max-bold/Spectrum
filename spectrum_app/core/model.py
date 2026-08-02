@@ -1,25 +1,22 @@
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
-
-
-AxisScale = Literal["linear", "log"]
 
 
 def _new_id() -> str:
     return str(uuid4())
 
 
-@dataclass(frozen=True)
-class AxisSpec:
-    """Describes the physical quantity and its plot representation."""
-
-    quantity: str
-    unit: str
-    scale: AxisScale = "linear"
+class AxisSpec(str, Enum):
+    FREQ = "frequency"
+    LEVEL = "level"
+    IMPEDANCE = "impedance"
+    PHASE = "phase"
+    THD = "thd"
 
 
 @dataclass
@@ -56,3 +53,4 @@ class AppState:
     visible_graph_ids: list[str] = field(default_factory=list)
     interface_state: dict[str, Any] = field(default_factory=dict)
     measuring: bool = False
+    graph_data_changed: bool = True

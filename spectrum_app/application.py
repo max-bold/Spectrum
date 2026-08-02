@@ -2,6 +2,7 @@ from collections.abc import Callable
 
 from .core.dpg import DearPyGuiRuntime
 from .core.model import AppState, Measurement
+from .core.settings import AppSettings
 from .gui.main_window import MainWindow
 
 
@@ -14,6 +15,7 @@ class SpectrumApplication:
         self._running = False
         self.frame_callbacks: list[Callable[[], None]] = []
         self.app_state = AppState()
+        self.settings = AppSettings(on_change=self._settings_changed)
         self.dpg = DearPyGuiRuntime()
         self.main_window = MainWindow(self)
 
@@ -36,6 +38,7 @@ class SpectrumApplication:
                 self._running = False
 
     def _initialize(self) -> None:
+        self.settings.load()
         self.dpg.create_context()
         if not self.app_state.measurements:
             self.create_measurement()
@@ -61,6 +64,9 @@ class SpectrumApplication:
     def _shutdown(self) -> None:
         self.dpg.destroy_context()
 
+    def _settings_changed(self) -> None:
+        self.app_state.graph_data_changed = True
+
     def create_measurement(self, module_id: str | None = None) -> Measurement:
         measurement = Measurement(
             module_id=module_id or self.DEFAULT_MODULE_ID,
@@ -68,6 +74,7 @@ class SpectrumApplication:
         )
         self.app_state.measurements.append(measurement)
         self.app_state.active_measurement_id = measurement.id
+        self.app_state.graph_data_changed = True
         return measurement
 
     def delete_measurement(self, measurement_id: str) -> None:
@@ -84,6 +91,7 @@ class SpectrumApplication:
             for graph_id in self.app_state.visible_graph_ids
             if graph_id not in graph_ids
         ]
+        self.app_state.graph_data_changed = True
 
         if self.app_state.active_measurement_id == measurement_id:
             if self.app_state.measurements:
