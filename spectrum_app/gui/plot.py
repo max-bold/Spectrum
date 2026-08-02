@@ -1,17 +1,29 @@
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import dearpygui.dearpygui as dpg
 import numpy as np
 
 from audioanalysis import break_phase_wraps, phase_derivative, wrap_phase
 from spectrum_app.core.model import AxisSpec, GraphData, Measurement
+from spectrum_app.core.plot_export import PlotExportError, PlotExporter
 
 if TYPE_CHECKING:
     from spectrum_app.application import SpectrumApplication
 
 
 class Plot:
+    EXPORT_WAIT_FRAMES = 2
+    WATERMARK_TEXT = "BM Spectrum"
+    WATERMARK_RIGHT_MARGIN = 36
+    WATERMARK_TOP_MARGIN = 20
+    WATERMARK_COLOR = (180, 180, 180, 110)
+    WATERMARK_SIZE = 15
+    WATERMARK_BLOCKING_ITEM_TYPES = {
+        "mvAppItemType::mvWindowAppItem",
+        "mvAppItemType::mvFileDialog",
+    }
     AXIS_ORDER = (
         AxisSpec.LEVEL,
         AxisSpec.IMPEDANCE,
@@ -23,6 +35,8 @@ class Plot:
         self.app = app
         self.tag = "app::plot"
         self.x_axis = "app::plot::x_axis"
+        self.watermark_layer = "app::plot::watermark_layer"
+        self.watermark = "app::plot::watermark"
         self.y_axes = [
             "app::plot::y_axis_1",
             "app::plot::y_axis_2",
@@ -31,6 +45,11 @@ class Plot:
         self.series_tags: list[str] = []
         self.axis_warning = "app::plot::axis_warning"
         self.axis_warning_text = "app::plot::axis_warning_text"
+        self.export_dialog = "app::plot::export_dialog"
+        self.exporter = PlotExporter()
+        self._pending_export_path: Path | None = None
+        self._export_wait_frames = 0
+        self._built = False
 
     def build(self, width: int, height: int) -> None:
         with dpg.plot(  # pyright: ignore[reportGeneralTypeIssues]
@@ -54,17 +73,124 @@ class Plot:
                     tag=axis_tag,
                     show=False,
                 )
+        dpg.add_viewport_drawlist(tag=self.watermark_layer, front=True)
+        dpg.draw_text(
+            (0, 0),
+            self.WATERMARK_TEXT,
+            tag=self.watermark,
+            parent=self.watermark_layer,
+            color=self.WATERMARK_COLOR,
+            size=self.WATERMARK_SIZE,
+            show=False,
+        )
+        self._built = True
 
-    def update(self) -> None:
-        if not self.app.app_state.graph_data_changed:
+    def build_export(self, export_menu: int | str) -> None:
+        dpg.add_menu_item(
+            label="Plot",
+            parent=export_menu,
+            callback=self.show_export_dialog,
+        )
+        dpg.add_file_dialog(
+            tag=self.export_dialog,
+            show=False,
+            modal=True,
+            width=700,
+            height=400,
+            default_filename="plot.png",
+            callback=self.export_png,
+        )
+        dpg.add_file_extension(".png", parent=self.export_dialog)
+
+    def show_export_dialog(self, sender=None, app_data=None, user_data=None) -> None:
+        dpg.show_item(self.export_dialog)
+
+    def export_png(
+        self,
+        sender: int | str,
+        app_data: dict[str, Any],
+        user_data=None,
+    ) -> None:
+        value = app_data.get("file_path_name")
+        if not value:
+            return
+        if dpg.does_item_exist(sender):
+            dpg.hide_item(sender)
+        self.app.main_window.set_status_text(f"Exporting plot: {value}")
+        self._pending_export_path = Path(value)
+        self._export_wait_frames = self.EXPORT_WAIT_FRAMES
+
+    def _process_pending_export(self) -> None:
+        path = self._pending_export_path
+        if path is None:
+            return
+        if self._export_wait_frames > 0:
+            self._export_wait_frames -= 1
+            return
+        self._pending_export_path = None
+        try:
+            self.exporter.export(
+                path,
+                self.tag,
+                on_complete=self._export_completed,
+            )
+        except PlotExportError as error:
+            self.app.main_window.set_status_text(f"Plot export error: {error}")
             return
 
-        self.app.app_state.graph_data_changed = False
-        try:
-            self._redraw()
-        except Exception:
-            self.app.app_state.graph_data_changed = True
-            raise
+    def _export_completed(self, path: Path | None, error: str | None) -> None:
+        if error is not None or path is None:
+            self.app.main_window.set_status_text(
+                f"Plot export error: {error or 'Unknown error'}"
+            )
+            return
+        self.app.main_window.set_status_text(f"Plot exported: {path}")
+
+    def update(self) -> None:
+        self._process_pending_export()
+        if self.app.app_state.graph_data_changed:
+            self.app.app_state.graph_data_changed = False
+            try:
+                self._redraw()
+            except Exception:
+                self.app.app_state.graph_data_changed = True
+                raise
+        self._update_watermark()
+
+    def _update_watermark(self) -> None:
+        if not self._built:
+            return
+        if self._watermark_is_obscured():
+            dpg.configure_item(self.watermark, show=False)
+            return
+        rect_min = dpg.get_item_rect_min(self.tag)
+        rect_max = dpg.get_item_rect_max(self.tag)
+        if len(rect_min) < 2 or len(rect_max) < 2:
+            return
+        if rect_max[0] <= rect_min[0] or rect_max[1] <= rect_min[1]:
+            dpg.configure_item(self.watermark, show=False)
+            return
+
+        text_width, _ = dpg.get_text_size(self.WATERMARK_TEXT)
+        dpg.configure_item(
+            self.watermark,
+            pos=(
+                float(rect_max[0] - text_width - self.WATERMARK_RIGHT_MARGIN),
+                float(rect_min[1] + self.WATERMARK_TOP_MARGIN),
+            ),
+            show=True,
+        )
+
+    def _watermark_is_obscured(self) -> bool:
+        main_window = self.app.main_window.tag
+        for item in dpg.get_windows():
+            if dpg.get_item_alias(item) == main_window:
+                continue
+            if dpg.get_item_type(item) not in self.WATERMARK_BLOCKING_ITEM_TYPES:
+                continue
+            if dpg.is_item_shown(item):
+                return True
+        return False
 
     def _redraw(self) -> None:
         dpg.set_axis_limits(self.x_axis, *self.app.settings.frequency_range)

@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any
 import dearpygui.dearpygui as dpg
 
 from audioanalysis import SmoothingWindow, SpiceTableValues
+from spectrum_app.gui.controls import LevelMeter, add_level_meter
 
 if TYPE_CHECKING:
     from spectrum_app.modules.impedance.module import ImpedanceModule
@@ -11,18 +12,25 @@ if TYPE_CHECKING:
 class ImpedanceView:
     ROOT = "module::impedance::controls"
     BOTTOM = "module::impedance::bottom"
+    LEVEL_METER = "module::impedance::level_meter"
     CALIBRATION_DIALOG = "module::impedance::calibration"
     CALIBRATION_TEXT = "module::impedance::calibration::text"
+    CALIBRATION_RESISTORS = "module::impedance::calibration::resistors"
+    REFERENCE_RESISTOR = "module::impedance::calibration::reference_resistor"
+    CALIBRATION_RESISTOR = "module::impedance::calibration::calibration_resistor"
     CALIBRATION_CONTINUE = "module::impedance::calibration::continue"
+    CALIBRATE_ITEM = "module::impedance::calibrate_tool"
     TEST_TONE_ITEM = "module::impedance::test_tone_tool"
     TOOLS_ITEM = "module::impedance::spice_fit_tool"
     SPICE_WINDOW = "module::impedance::spice_fit"
     SPICE_TEXT = "module::impedance::spice_fit::text"
+    CALIBRATION_WIDTH = 560
+    CALIBRATION_HEIGHT = 340
 
     def __init__(self, module: "ImpedanceModule") -> None:
         self.module = module
         self.status = "module::impedance::status"
-        self.levels = "module::impedance::levels"
+        self.level_meter: LevelMeter | None = None
 
     def build(
         self,
@@ -55,28 +63,6 @@ class ImpedanceView:
                     callback=self._set_duration,
                 )
             with dpg.collapsing_header(  # pyright: ignore[reportGeneralTypeIssues]
-                label="Measurement",
-                default_open=True,
-            ):
-                dpg.add_text("Reference resistor, Ohm")
-                dpg.add_input_float(
-                    default_value=state["reference_resistor"],
-                    min_value=0.001,
-                    min_clamped=True,
-                    step=0,
-                    width=-1,
-                    callback=self._set_reference_resistor,
-                )
-                dpg.add_text("Calibration resistor, Ohm")
-                dpg.add_input_float(
-                    default_value=state["calibration_resistor"],
-                    min_value=0.001,
-                    min_clamped=True,
-                    step=0,
-                    width=-1,
-                    callback=self._set_calibration_resistor,
-                )
-            with dpg.collapsing_header(  # pyright: ignore[reportGeneralTypeIssues]
                 label="Filtering",
                 default_open=True,
             ):
@@ -105,10 +91,23 @@ class ImpedanceView:
         with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
             parent=bottom_parent,
             tag=self.BOTTOM,
+            horizontal=True,
         ):
-            dpg.add_text("CH1: 0.000   CH2: 0.000", tag=self.levels)
+            self.level_meter = add_level_meter(
+                self.BOTTOM,
+                self.LEVEL_METER,
+                bottom_parent,
+                labels=("A", "B"),
+                height_offset=-16,
+            )
             dpg.add_text("Calibration required", tag=self.status, wrap=-1)
 
+        dpg.add_menu_item(
+            label="Calibrate",
+            tag=self.CALIBRATE_ITEM,
+            parent=self.module.app.main_window.tools_menu,
+            callback=self.module.request_calibration,
+        )
         dpg.add_menu_item(
             label="Test tone",
             tag=self.TEST_TONE_ITEM,
@@ -135,14 +134,37 @@ class ImpedanceView:
         with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
             label="Impedance calibration",
             tag=self.CALIBRATION_DIALOG,
-            width=560,
-            height=260,
+            width=self.CALIBRATION_WIDTH,
+            height=self.CALIBRATION_HEIGHT,
             show=False,
             modal=True,
             no_resize=True,
             on_close=self.module.cancel_calibration,
         ):
             dpg.add_text("", tag=self.CALIBRATION_TEXT, wrap=520)
+            with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
+                tag=self.CALIBRATION_RESISTORS,
+            ):
+                dpg.add_text("Reference resistor, Ohm")
+                dpg.add_input_float(
+                    tag=self.REFERENCE_RESISTOR,
+                    default_value=state["reference_resistor"],
+                    min_value=0.001,
+                    min_clamped=True,
+                    step=0,
+                    width=-1,
+                    callback=self._set_reference_resistor,
+                )
+                dpg.add_text("Calibration resistor, Ohm")
+                dpg.add_input_float(
+                    tag=self.CALIBRATION_RESISTOR,
+                    default_value=state["calibration_resistor"],
+                    min_value=0.001,
+                    min_clamped=True,
+                    step=0,
+                    width=-1,
+                    callback=self._set_calibration_resistor,
+                )
             dpg.add_button(
                 label="Continue",
                 tag=self.CALIBRATION_CONTINUE,
@@ -161,11 +183,17 @@ class ImpedanceView:
             self.BOTTOM,
             self.CALIBRATION_DIALOG,
             self.SPICE_WINDOW,
+            self.CALIBRATE_ITEM,
             self.TEST_TONE_ITEM,
             self.TOOLS_ITEM,
         ):
             if dpg.does_item_exist(item):
                 dpg.delete_item(item)
+        self.level_meter = None
+
+    def update(self) -> None:
+        if self.level_meter is not None:
+            self.level_meter.resize()
 
     def set_enabled(self, enabled: bool) -> None:
         if dpg.does_item_exist(self.ROOT):
@@ -177,18 +205,23 @@ class ImpedanceView:
         levels: tuple[float, float],
     ) -> None:
         dpg.set_value(self.status, status)
-        dpg.set_value(
-            self.levels,
-            f"CH1: {levels[0]:.3f}   CH2: {levels[1]:.3f}",
-        )
+        if self.level_meter is not None:
+            self.level_meter.set_levels(*levels)
+
     def show_calibration_stage(self, stage: int) -> None:
         if stage == 1:
             text = (
                 "Stage 1 of 2: channel calibration\n\n"
-                "Connect CH1 and CH2 to the same audio_out point relative to "
+                "Connect inputs A and B to the same audio_out point relative to "
                 "ground. Both inputs must receive the same electrical signal."
             )
             label = "Start stage 1"
+            state = self.module.measurement.module_state
+            dpg.set_value(self.REFERENCE_RESISTOR, state["reference_resistor"])
+            dpg.set_value(
+                self.CALIBRATION_RESISTOR,
+                state["calibration_resistor"],
+            )
         else:
             text = (
                 "Stage 2 of 2: resistor calibration\n\n"
@@ -196,8 +229,20 @@ class ImpedanceView:
                 "the measurement input, then continue."
             )
             label = "Start stage 2"
+        dpg.configure_item(self.CALIBRATION_RESISTORS, show=stage == 1)
         dpg.set_value(self.CALIBRATION_TEXT, text)
         dpg.set_item_label(self.CALIBRATION_CONTINUE, label)
+        main_position = dpg.get_item_pos(self.module.app.main_window.tag)
+        main_size = dpg.get_item_rect_size(self.module.app.main_window.tag)
+        dpg.set_item_pos(
+            self.CALIBRATION_DIALOG,
+            [
+                main_position[0]
+                + (main_size[0] - self.CALIBRATION_WIDTH) / 2,
+                main_position[1]
+                + (main_size[1] - self.CALIBRATION_HEIGHT) / 2,
+            ],
+        )
         dpg.configure_item(self.CALIBRATION_DIALOG, show=True)
 
     def hide_calibration(self) -> None:

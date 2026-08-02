@@ -5,60 +5,54 @@ import numpy as np
 
 from audioanalysis import (
     ASignal,
-    AnalysisMethod,
     FrequencyBand,
-    SpectrumConfig,
-    SpectrumResult,
-    analyze_spectrum,
+    PhaseConfig,
+    PhaseResult,
+    analyze_phase,
     log_chirp,
-    pink_noise,
-    power_db,
 )
 from spectrum_app.core.audio import AudioInput, AudioOutput
 
-
-SnapshotCallback = Callable[[ASignal, ASignal], None]
-LevelCallback = Callable[[np.ndarray, np.ndarray], None]
+LevelCallback = Callable[[np.ndarray, np.ndarray, tuple[float, float]], None]
 CompleteCallback = Callable[
-    [ASignal | None, ASignal | None, np.ndarray, np.ndarray, str | None],
+    [ASignal | None, ASignal | None, np.ndarray, np.ndarray, str | None, bool],
     None,
 ]
-AnalysisResponse = tuple[int, bool, SpectrumResult | None, str | None]
+AnalysisResponse = tuple[int, bool, PhaseResult | None, str | None]
 
 
-class SpectrumAcquisition(Thread):
-    """Records input and plays a generated signal using blocking audio APIs."""
+class PhaseAcquisition(Thread):
+    """Record A/B while a mono logarithmic sweep is written independently."""
 
-    LEADING_SILENCE_SECONDS = 0.2
-    RECORDING_TAIL_SECONDS = 1.0
     LEVEL_UPDATE_SECONDS = 0.1
+    OUTPUT_LEVEL = 0.9
 
     def __init__(
         self,
         audio_input: AudioInput,
         audio_output: AudioOutput,
         *,
-        generator_mode: str,
         band: FrequencyBand,
         duration: float,
-        online_interval: float | None,
+        pre_silence: float,
+        post_silence: float,
+        fade: float,
         on_level: LevelCallback,
-        on_snapshot: SnapshotCallback,
         on_complete: CompleteCallback,
     ) -> None:
-        super().__init__(name="spectrum-acquisition", daemon=True)
+        super().__init__(name="phase-acquisition", daemon=True)
         self.audio_input = audio_input
         self.audio_output = audio_output
-        self.generator_mode = generator_mode
         self.band = band
         self.duration = duration
-        self.online_interval = online_interval
+        self.pre_silence = pre_silence
+        self.post_silence = post_silence
+        self.fade = fade
         self.on_level = on_level
-        self.on_snapshot = on_snapshot
         self.on_complete = on_complete
         self._stop_event = Event()
         self._writer_error: Exception | None = None
-        self._writer_error_lock = Lock()
+        self._writer_lock = Lock()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -80,161 +74,153 @@ class SpectrumAcquisition(Thread):
                 raise RuntimeError("Cannot open audio input")
             if not self.audio_output.open():
                 raise RuntimeError("Cannot open audio output")
-            if self._stop_event.is_set():
-                return
-
+            input_rate = self.audio_input.sample_rate
             generator = self._generate_signal()
             writer = Thread(
                 target=self._write_signal,
                 args=(generator,),
-                name="spectrum-output",
+                name="phase-output",
                 daemon=True,
             )
             writer.start()
 
-            input_rate = self.audio_input.sample_rate
-            output_rate = self.audio_output.sample_rate
             target_samples = int(
-                np.ceil(generator.sample_count * input_rate / output_rate)
-                + self.RECORDING_TAIL_SECONDS * input_rate
+                round(
+                    (self.pre_silence + self.duration + self.post_silence) * input_rate
+                )
             )
-            update_samples = (
-                max(1, int(self.online_interval * input_rate))
-                if self.online_interval is not None
-                else None
-            )
-            next_update = update_samples
-            level_update_samples = max(
+            update_samples = max(
                 1,
                 int(round(self.LEVEL_UPDATE_SECONDS * input_rate)),
             )
-            next_level_update = 0
-            recorded_samples = 0
-
-            while recorded_samples < target_samples and not self._stop_event.is_set():
+            next_update = 0
+            recorded = 0
+            while recorded < target_samples and not self._stop_event.is_set():
                 writer_error = self._get_writer_error()
                 if writer_error is not None:
                     raise writer_error
-                samples = min(self.audio_input.block_size, target_samples - recorded_samples)
-                block = self.audio_input.read(samples)
+                samples = min(self.audio_input.block_size, target_samples - recorded)
+                block = np.asarray(self.audio_input.read(samples), dtype=np.float32)
+                if block.ndim != 2 or block.shape[1] != 2:
+                    raise RuntimeError(
+                        "Audio input must return logical channels A and B"
+                    )
                 if len(block) == 0:
                     raise RuntimeError("Audio input returned no samples")
                 chunks.append(block)
-                recorded_samples += len(block)
-                level_time.append(recorded_samples / input_rate)
-                level_values.append(
-                    np.max(np.abs(block[:, :2]), axis=0).astype(np.float64)
-                )
-                if recorded_samples >= next_level_update:
+                recorded += len(block)
+                level_time.append(recorded / input_rate)
+                level_values.append(np.max(np.abs(block), axis=0).astype(np.float64))
+                if recorded >= next_update:
+                    levels = np.vstack(level_values)
                     self.on_level(
                         np.asarray(level_time, dtype=np.float64),
-                        np.vstack(level_values),
+                        levels,
+                        (float(levels[-1, 0]), float(levels[-1, 1])),
                     )
-                    next_level_update = recorded_samples + level_update_samples
-                if (
-                    next_update is not None
-                    and update_samples is not None
-                    and recorded_samples >= next_update
-                ):
-                    self.on_snapshot(
-                        ASignal(np.concatenate(chunks, axis=0), input_rate),
-                        generator,
-                    )
-                    next_update = recorded_samples + update_samples
+                    next_update = recorded + update_samples
 
             if writer is not None:
-                writer.join()
+                writer.join(timeout=2.0)
+                if writer.is_alive() and not self._stop_event.is_set():
+                    raise RuntimeError("Audio output did not stop")
             writer_error = self._get_writer_error()
             if writer_error is not None and not self._stop_event.is_set():
                 raise writer_error
         except Exception as error:
             if not self._stop_event.is_set():
-                error_message = str(error)
+                error_message = str(error) or error.__class__.__name__
         finally:
+            cancelled = self._stop_event.is_set()
             self._stop_event.set()
             self.audio_output.close()
             self.audio_input.close()
             if writer is not None and writer.is_alive():
                 writer.join(timeout=1.0)
-            recording = (
-                ASignal(np.concatenate(chunks, axis=0), input_rate)
-                if chunks
-                else None
-            )
             times = np.asarray(level_time, dtype=np.float64)
             levels = (
                 np.vstack(level_values)
                 if level_values
-                else np.empty((0, 0), dtype=np.float64)
+                else np.empty((0, 2), dtype=np.float64)
             )
             if levels.size:
-                self.on_level(times, levels)
-            self.on_complete(recording, generator, times, levels, error_message)
+                self.on_level(
+                    times,
+                    levels,
+                    (float(levels[-1, 0]), float(levels[-1, 1])),
+                )
+            recording = (
+                ASignal(np.concatenate(chunks, axis=0), input_rate)
+                if chunks and input_rate > 0
+                else None
+            )
+            self.on_complete(
+                recording,
+                generator,
+                times,
+                levels,
+                error_message,
+                cancelled,
+            )
 
     def _generate_signal(self) -> ASignal:
         sample_rate = self.audio_output.sample_rate
-        samples = max(1, int(round(self.duration * sample_rate)))
-        if self.generator_mode == "log chirp":
-            signal = log_chirp(
-                samples,
-                sample_rate,
-                self.band,
-                channels=1,
-                pad=0,
-                fade=0,
-            )
-        elif self.generator_mode == "pink noise":
-            signal = pink_noise(
-                samples,
-                sample_rate,
-                self.band,
-                channels=1,
-                pad=0,
-                fade=0,
-            )
-        else:
-            raise ValueError(f"Unknown generator mode: {self.generator_mode}")
-        leading_silence = int(round(self.LEADING_SILENCE_SECONDS * sample_rate))
-        return signal.pad(in_=leading_silence)
+        sweep_samples = max(1, int(round(self.duration * sample_rate)))
+        fade_samples = min(
+            sweep_samples // 2,
+            max(0, int(round(self.fade * sample_rate))),
+        )
+        sweep = log_chirp(
+            sweep_samples,
+            sample_rate,
+            self.band,
+            amplitude=self.OUTPUT_LEVEL,
+            channels=1,
+            pad=0,
+            fade=fade_samples,
+        )
+        return sweep.pad(
+            in_=int(round(self.pre_silence * sample_rate)),
+            out=int(round(self.post_silence * sample_rate)),
+        )
 
     def _write_signal(self, generator: ASignal) -> None:
         try:
-            data = generator.as_array()
+            data = generator.as_array(np.float32)[:, 0]
             position = 0
             while position < len(data) and not self._stop_event.is_set():
                 end = min(position + self.audio_output.block_size, len(data))
-                block = data[position:end, 0]
-                self.audio_output.write(block)
+                self.audio_output.write(data[position:end])
                 position = end
         except Exception as error:
             if not self._stop_event.is_set():
-                with self._writer_error_lock:
+                with self._writer_lock:
                     self._writer_error = error
 
     def _get_writer_error(self) -> Exception | None:
-        with self._writer_error_lock:
+        with self._writer_lock:
             return self._writer_error
 
 
-class SpectrumAnalyzer(Thread):
-    """Calculates only the newest requested spectrum without building a queue."""
+class PhaseAnalyzer(Thread):
+    """Calculate only the newest requested phase response off the UI thread."""
 
     def __init__(self) -> None:
-        super().__init__(name="spectrum-analyzer", daemon=True)
+        super().__init__(name="phase-analyzer", daemon=True)
         self._condition = Condition()
         self._stop_requested = False
-        self._request: tuple[int, bool, ASignal, SpectrumConfig] | None = None
+        self._request: tuple[int, bool, ASignal, PhaseConfig] | None = None
         self._response: AnalysisResponse | None = None
 
     def submit(
         self,
         revision: int,
-        final: bool,
-        signal: ASignal,
-        config: SpectrumConfig,
+        finishing: bool,
+        recording: ASignal,
+        config: PhaseConfig,
     ) -> None:
         with self._condition:
-            self._request = (revision, final, signal, config)
+            self._request = (revision, finishing, recording, config)
             self._condition.notify()
 
     def poll(self) -> AnalysisResponse | None:
@@ -243,12 +229,13 @@ class SpectrumAnalyzer(Thread):
             self._response = None
             return response
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout: float = 2.0) -> None:
         with self._condition:
             self._stop_requested = True
+            self._request = None
             self._condition.notify()
         if self.is_alive():
-            self.join()
+            self.join(timeout=timeout)
 
     def run(self) -> None:
         while True:
@@ -261,17 +248,20 @@ class SpectrumAnalyzer(Thread):
                 self._request = None
             if request is None:
                 continue
-
-            revision, final, signal, config = request
+            revision, finishing, recording, config = request
             try:
-                result = analyze_spectrum(signal, config)
                 response: AnalysisResponse = (
                     revision,
-                    final,
-                    SpectrumResult(result.frequency, power_db(result.values)),
+                    finishing,
+                    analyze_phase(recording, config),
                     None,
                 )
             except Exception as error:
-                response = (revision, final, None, str(error))
+                response = (
+                    revision,
+                    finishing,
+                    None,
+                    str(error) or error.__class__.__name__,
+                )
             with self._condition:
                 self._response = response

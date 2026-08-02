@@ -4,6 +4,7 @@ from pathlib import Path
 from .core.audio import AudioInput, AudioOutput, AudioService
 from .core.dpg import DearPyGuiRuntime
 from .core.model import AppState, Measurement
+from .core.measurement_io import MeasurementIOError
 from .core.project import (
     ProjectError,
     load_project as load_app_state,
@@ -37,6 +38,14 @@ class SpectrumApplication:
     @property
     def running(self) -> bool:
         return self._running
+
+    @property
+    def active_measurement(self) -> Measurement | None:
+        active_id = self.app_state.active_measurement_id
+        for measurement in self.app_state.measurements:
+            if measurement.id == active_id:
+                return measurement
+        return None
 
     def run(self) -> None:
         if self._running:
@@ -169,6 +178,21 @@ class SpectrumApplication:
         self.app_state.active_measurement_id = measurement.id
         self.app_state.graph_data_changed = True
         return measurement
+
+    def add_imported_measurement(self, measurement: Measurement) -> None:
+        if self.app_state.measuring:
+            raise MeasurementIOError("Stop the current measurement before importing")
+        if measurement.module_id not in self.module_manager.module_ids:
+            raise MeasurementIOError(
+                f"Measurement uses unavailable module: {measurement.module_id}"
+            )
+
+        self.app_state.measurements.append(measurement)
+        self.app_state.active_measurement_id = measurement.id
+        for graph in measurement.graphs:
+            self.app_state.visible_graph_ids.append(graph.id)
+        self.app_state.graph_data_changed = True
+        self.main_window.measurement_added()
 
     def delete_measurement(self, measurement_id: str) -> None:
         for index, measurement in enumerate(self.app_state.measurements):

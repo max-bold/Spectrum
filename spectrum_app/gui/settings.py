@@ -24,6 +24,10 @@ class SettingsWindow:
         self.output_device = "app::settings::output_device"
         self.input_block_size = "app::settings::input_block_size"
         self.output_block_size = "app::settings::output_block_size"
+        self.input_routing_host = "app::settings::input_routing_host"
+        self.output_routing_host = "app::settings::output_routing_host"
+        self.input_routing_table = "app::settings::input_routing_table"
+        self.output_routing_table = "app::settings::output_routing_table"
         self._input_device_ids: dict[str, str] = {}
         self._output_device_ids: dict[str, str] = {}
 
@@ -97,6 +101,11 @@ class SettingsWindow:
                         width=-1,
                         callback=self._set_input_device,
                     )
+                    dpg.add_text("Input routing")
+                    with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
+                        tag=self.input_routing_host,
+                    ):
+                        pass
                     dpg.add_text("Recommended input block size")
                     dpg.add_input_int(
                         tag=self.input_block_size,
@@ -116,6 +125,11 @@ class SettingsWindow:
                         width=-1,
                         callback=self._set_output_device,
                     )
+                    dpg.add_text("Output routing")
+                    with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
+                        tag=self.output_routing_host,
+                    ):
+                        pass
                     dpg.add_text("Recommended output block size")
                     dpg.add_input_int(
                         tag=self.output_block_size,
@@ -124,6 +138,7 @@ class SettingsWindow:
                         min_clamped=True,
                         callback=self._set_output_block_size,
                     )
+        self._rebuild_routing_tables()
 
     def update(self) -> None:
         if self.app._audio_service.consume_devices_changed():
@@ -173,6 +188,69 @@ class SettingsWindow:
         dpg.configure_item(self.output_device, items=output_items)
         dpg.set_value(self.input_device, input_value)
         dpg.set_value(self.output_device, output_value)
+        self._rebuild_routing_tables()
+
+    def _rebuild_routing_tables(self) -> None:
+        self._rebuild_input_routing()
+        self._rebuild_output_routing()
+
+    def _rebuild_input_routing(self) -> None:
+        if dpg.does_item_exist(self.input_routing_table):
+            dpg.delete_item(self.input_routing_table)
+        device = self.app._audio_service.selected_input_device
+        channels = device.input_channels if device is not None else 0
+        routing = self.app._audio_service.input_routing
+        with dpg.table(  # pyright: ignore[reportGeneralTypeIssues]
+            parent=self.input_routing_host,
+            tag=self.input_routing_table,
+            header_row=True,
+            scrollX=True,
+            height=82,
+        ):
+            dpg.add_table_column(label="")
+            for channel in range(channels):
+                dpg.add_table_column(label=str(channel + 1))
+            for logical_index, logical_channel in enumerate(("A", "B")):
+                with dpg.table_row():  # pyright: ignore[reportGeneralTypeIssues]
+                    dpg.add_text(logical_channel)
+                    for physical_channel in range(channels):
+                        dpg.add_checkbox(
+                            tag=self._input_route_tag(
+                                logical_index,
+                                physical_channel,
+                            ),
+                            default_value=(
+                                routing[logical_index] == physical_channel
+                            ),
+                            callback=self._set_input_route,
+                            user_data=(logical_index, physical_channel),
+                        )
+
+    def _rebuild_output_routing(self) -> None:
+        if dpg.does_item_exist(self.output_routing_table):
+            dpg.delete_item(self.output_routing_table)
+        device = self.app._audio_service.selected_output_device
+        channels = device.output_channels if device is not None else 0
+        routing = self.app._audio_service.output_routing
+        with dpg.table(  # pyright: ignore[reportGeneralTypeIssues]
+            parent=self.output_routing_host,
+            tag=self.output_routing_table,
+            header_row=True,
+            scrollX=True,
+            height=62,
+        ):
+            dpg.add_table_column(label="")
+            for channel in range(channels):
+                dpg.add_table_column(label=str(channel + 1))
+            with dpg.table_row():  # pyright: ignore[reportGeneralTypeIssues]
+                dpg.add_text("Mono")
+                for physical_channel in range(channels):
+                    dpg.add_checkbox(
+                        tag=self._output_route_tag(physical_channel),
+                        default_value=routing[physical_channel],
+                        callback=self._set_output_route,
+                        user_data=physical_channel,
+                    )
 
     def _device_items(
         self, direction: AudioDirection
@@ -241,11 +319,63 @@ class SettingsWindow:
         self, sender: int | str, value: str, user_data=None
     ) -> None:
         self.app.settings.input_device = self._input_device_ids[value]
+        device = self.app._audio_service.selected_input_device
+        channels = device.input_channels if device is not None else 0
+        self.app.settings.input_routing = (
+            self.app._audio_service.default_input_routing(channels)
+        )
+        self._rebuild_input_routing()
 
     def _set_output_device(
         self, sender: int | str, value: str, user_data=None
     ) -> None:
         self.app.settings.output_device = self._output_device_ids[value]
+        device = self.app._audio_service.selected_output_device
+        channels = device.output_channels if device is not None else 0
+        self.app.settings.output_routing = (
+            self.app._audio_service.default_output_routing(channels)
+        )
+        self._rebuild_output_routing()
+
+    def _set_input_route(
+        self,
+        sender: int | str,
+        value: bool,
+        user_data: tuple[int, int],
+    ) -> None:
+        logical_index, physical_channel = user_data
+        routing = list(self.app._audio_service.input_routing)
+        if value:
+            routing[logical_index] = physical_channel
+        elif routing[logical_index] == physical_channel:
+            routing[logical_index] = None
+        self.app.settings.input_routing = routing[0], routing[1]
+
+        device = self.app._audio_service.selected_input_device
+        channels = device.input_channels if device is not None else 0
+        for channel in range(channels):
+            dpg.set_value(
+                self._input_route_tag(logical_index, channel),
+                routing[logical_index] == channel,
+            )
+
+    def _set_output_route(
+        self,
+        sender: int | str,
+        value: bool,
+        user_data: int,
+    ) -> None:
+        routing = list(self.app._audio_service.output_routing)
+        routing[user_data] = bool(value)
+        self.app.settings.output_routing = tuple(routing)
+
+    @staticmethod
+    def _input_route_tag(logical_index: int, physical_channel: int) -> str:
+        return f"app::settings::input_route::{logical_index}::{physical_channel}"
+
+    @staticmethod
+    def _output_route_tag(physical_channel: int) -> str:
+        return f"app::settings::output_route::{physical_channel}"
 
     def _set_input_block_size(
         self, sender: int | str, value: int, user_data=None

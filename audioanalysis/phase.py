@@ -1,8 +1,169 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
+
+from .smoothing import SmoothingWindow, grid_smooth
+from .types import ASignal, FrequencyBand
+
+SPEED_OF_SOUND_M_S = 343.0
+_EPSILON = 1e-20
+
+
+@dataclass(frozen=True)
+class PhaseConfig:
+    """Settings for a two-channel acoustic phase measurement.
+
+    Logical input A is the measured acoustic signal and logical input B is the
+    electrical reference. ``delay_correction_meters`` is added to the fitted
+    delay before phase compensation; positive values therefore remove more
+    propagation delay from the displayed phase.
+    """
+
+    band: FrequencyBand = FrequencyBand()
+    delay_fit_band: FrequencyBand = FrequencyBand(80.0, 15_000.0)
+    points: int = 1024
+    smoothing_octaves: float = 1.0 / 3.0
+    delay_correction_meters: float = 0.0
+    minimum_a_db: float = -60.0
+    minimum_b_db: float = -60.0
+    speed_of_sound: float = SPEED_OF_SOUND_M_S
+
+    def validate(self, sample_rate: int) -> None:
+        self.band.validate(nyquist=sample_rate / 2)
+        self.delay_fit_band.validate(nyquist=sample_rate / 2)
+        if (
+            self.delay_fit_band.low < self.band.low
+            or self.delay_fit_band.high > self.band.high
+        ):
+            raise ValueError("Delay fit range must be inside frequency range")
+        if self.points < 2:
+            raise ValueError("Point count must be at least two")
+        if self.smoothing_octaves <= 0.0:
+            raise ValueError("Smoothing width must be positive")
+        if self.speed_of_sound <= 0.0:
+            raise ValueError("Speed of sound must be positive")
+
+
+@dataclass(frozen=True)
+class PhaseResult:
+    """Smoothed transfer magnitude and unwrapped compensated phase."""
+
+    frequency: NDArray[np.float64]
+    magnitude_db: NDArray[np.float64]
+    phase_degrees: NDArray[np.float64]
+    estimated_delay_seconds: float
+    estimated_delay_meters: float
+    compensation_delay_seconds: float
+
+
+def analyze_phase(recording: ASignal, config: PhaseConfig) -> PhaseResult:
+    """Calculate acoustic transfer A/B and compensate its linear delay.
+
+    The returned phase is deliberately not wrapped. Presentation choices such
+    as wrapping to +/-180 degrees or converting to degrees/decade belong to the
+    application plot layer.
+    """
+
+    if recording.channel_count != 2:
+        raise ValueError("Phase analysis requires logical input channels A and B")
+    if recording.sample_count < 2:
+        raise ValueError("Phase analysis requires at least two samples")
+    config.validate(recording.sample_rate)
+
+    data = recording.as_array(np.float64)
+    channel_a = data[:, 0] - np.mean(data[:, 0])
+    channel_b = data[:, 1] - np.mean(data[:, 1])
+    frequency = np.fft.rfftfreq(len(data), d=1.0 / recording.sample_rate)
+    fft_a = np.fft.rfft(channel_a)
+    fft_b = np.fft.rfft(channel_b)
+    transfer = np.divide(
+        fft_a,
+        fft_b,
+        out=np.full(fft_a.shape, np.nan + 0j, dtype=np.complex128),
+        where=np.abs(fft_b) > _EPSILON,
+    )
+
+    delay = estimate_phase_delay(
+        frequency,
+        transfer,
+        fft_a,
+        fft_b,
+        config.delay_fit_band,
+        minimum_a_db=config.minimum_a_db,
+        minimum_b_db=config.minimum_b_db,
+    )
+    compensation_delay = delay + config.delay_correction_meters / config.speed_of_sound
+    compensated = transfer * np.exp(1j * 2.0 * np.pi * frequency * compensation_delay)
+    grid = np.geomspace(config.band.low, config.band.high, config.points)
+    smoothed = grid_smooth(
+        frequency,
+        compensated,
+        grid,
+        window=SmoothingWindow.GAUSSIAN,
+        width=config.smoothing_octaves,
+    )
+    magnitude_db = 20.0 * np.log10(np.maximum(np.abs(smoothed), _EPSILON))
+    phase_degrees = np.rad2deg(np.unwrap(np.angle(smoothed)))
+    return PhaseResult(
+        frequency=grid,
+        magnitude_db=np.asarray(magnitude_db, dtype=np.float64),
+        phase_degrees=np.asarray(phase_degrees, dtype=np.float64),
+        estimated_delay_seconds=delay,
+        estimated_delay_meters=delay * config.speed_of_sound,
+        compensation_delay_seconds=compensation_delay,
+    )
+
+
+def estimate_phase_delay(
+    frequency: NDArray[np.floating],
+    transfer: NDArray[np.complexfloating],
+    fft_a: NDArray[np.complexfloating],
+    fft_b: NDArray[np.complexfloating],
+    fit_band: FrequencyBand,
+    *,
+    minimum_a_db: float = -60.0,
+    minimum_b_db: float = -60.0,
+) -> float:
+    """Estimate A relative to B delay from weighted phase slope."""
+
+    frequency = np.asarray(frequency, dtype=np.float64)
+    transfer = np.asarray(transfer, dtype=np.complex128)
+    magnitude_a = np.abs(np.asarray(fft_a))
+    magnitude_b = np.abs(np.asarray(fft_b))
+    if not (
+        frequency.shape == transfer.shape == magnitude_a.shape == magnitude_b.shape
+    ):
+        raise ValueError("Phase delay arrays must have equal shapes")
+
+    limit_a = float(np.max(magnitude_a)) * 10.0 ** (minimum_a_db / 20.0)
+    limit_b = float(np.max(magnitude_b)) * 10.0 ** (minimum_b_db / 20.0)
+    mask = (
+        (frequency >= fit_band.low)
+        & (frequency <= fit_band.high)
+        & np.isfinite(transfer)
+        & (magnitude_a >= limit_a)
+        & (magnitude_b >= limit_b)
+    )
+    if np.count_nonzero(mask) < 3:
+        raise ValueError("Not enough valid FFT bins for delay estimation")
+
+    fit_frequency = frequency[mask]
+    phase = np.unwrap(np.angle(transfer[mask]))
+    weights = np.sqrt(magnitude_a[mask] * magnitude_b[mask])
+    maximum_weight = float(np.max(weights))
+    if maximum_weight <= 0.0:
+        raise ValueError("Input signals are too quiet for delay estimation")
+    slope, _ = np.polyfit(
+        fit_frequency,
+        phase,
+        1,
+        w=weights / maximum_weight,
+    )
+    return float(-slope / (2.0 * np.pi))
 
 
 def wrap_phase(phase: NDArray[np.floating]) -> NDArray[np.float64]:
@@ -25,9 +186,7 @@ def break_phase_wraps(
     if len(x) < 2:
         return x.copy(), wrapped_phase.copy()
 
-    finite_pairs = np.isfinite(wrapped_phase[:-1]) & np.isfinite(
-        wrapped_phase[1:]
-    )
+    finite_pairs = np.isfinite(wrapped_phase[:-1]) & np.isfinite(wrapped_phase[1:])
     wrap_indices = np.flatnonzero(
         finite_pairs & (np.abs(np.diff(wrapped_phase)) > 180.0)
     )

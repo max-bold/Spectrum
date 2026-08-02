@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 AxisScale = Literal["linear", "log"]
 PhaseUnit = Literal["deg", "deg/dec"]
+InputRouting = tuple[int | None, int | None]
+OutputRouting = tuple[bool, ...]
 
 
 class AppSettings:
@@ -26,6 +28,8 @@ class AppSettings:
         self._output_device = ""
         self._input_block_size = self.DEFAULT_BLOCK_SIZE
         self._output_block_size = self.DEFAULT_BLOCK_SIZE
+        self._input_routing: InputRouting = (0, 1)
+        self._output_routing: OutputRouting = ()
         self._modules: dict[str, dict[str, Any]] = {}
 
     @property
@@ -97,6 +101,22 @@ class AppSettings:
     def output_block_size(self, value: int) -> None:
         self._set("_output_block_size", self._validate_block_size(value))
 
+    @property
+    def input_routing(self) -> InputRouting:
+        return self._input_routing
+
+    @input_routing.setter
+    def input_routing(self, value: InputRouting) -> None:
+        self._set("_input_routing", self._validate_input_routing(value))
+
+    @property
+    def output_routing(self) -> OutputRouting:
+        return self._output_routing
+
+    @output_routing.setter
+    def output_routing(self, value: OutputRouting) -> None:
+        self._set("_output_routing", self._validate_output_routing(value))
+
     def module_setting(
         self,
         module_id: str,
@@ -139,6 +159,12 @@ class AppSettings:
             self.output_block_size = audio.get(
                 "output_block_size", self.DEFAULT_BLOCK_SIZE
             )
+            self.input_routing = self._validate_input_routing(
+                audio.get("input_routing", (0, 1))
+            )
+            self.output_routing = self._validate_output_routing(
+                audio.get("output_routing", ())
+            )
             self._modules = self._validate_modules(data.get("modules", {}))
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             self._reset_defaults()
@@ -172,6 +198,8 @@ class AppSettings:
                 "output_device": self.output_device,
                 "input_block_size": self.input_block_size,
                 "output_block_size": self.output_block_size,
+                "input_routing": list(self.input_routing),
+                "output_routing": list(self.output_routing),
             },
             "modules": deepcopy(self._modules),
         }
@@ -200,6 +228,29 @@ class AppSettings:
         return block_size
 
     @staticmethod
+    def _validate_input_routing(value: object) -> InputRouting:
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ValueError("Input routing must contain channels A and B")
+        result: list[int | None] = []
+        for channel in value:
+            if channel is None:
+                result.append(None)
+                continue
+            index = int(channel)
+            if index < 0:
+                raise ValueError("Input channel index must not be negative")
+            result.append(index)
+        return result[0], result[1]
+
+    @staticmethod
+    def _validate_output_routing(value: object) -> OutputRouting:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("Output routing must be a sequence")
+        if not all(isinstance(enabled, bool) for enabled in value):
+            raise ValueError("Output routes must contain booleans")
+        return tuple(value)
+
+    @staticmethod
     def _validate_modules(value: object) -> dict[str, dict[str, Any]]:
         if not isinstance(value, dict):
             raise ValueError("Module settings must be an object")
@@ -222,4 +273,6 @@ class AppSettings:
         self._output_device = ""
         self._input_block_size = self.DEFAULT_BLOCK_SIZE
         self._output_block_size = self.DEFAULT_BLOCK_SIZE
+        self._input_routing = (0, 1)
+        self._output_routing = ()
         self._modules = {}

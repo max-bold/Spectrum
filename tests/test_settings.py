@@ -22,6 +22,8 @@ class AppSettingsTests(unittest.TestCase):
             settings.output_device = "WASAPI\x1fOutput"
             settings.input_block_size = 2048
             settings.output_block_size = 4096
+            settings.input_routing = (3, 1)
+            settings.output_routing = (True, False, True, True)
             settings.set_module_setting("spectrum", "generator_mode", "pink noise")
             settings.set_module_setting("spectrum", "welch_samples", 4096)
             settings.set_module_setting("spectrum", "online_welch", False)
@@ -29,7 +31,7 @@ class AppSettingsTests(unittest.TestCase):
             data = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(data, settings.to_dict())
             self.assertFalse(path.with_suffix(".json.tmp").exists())
-            self.assertEqual(len(changes), 11)
+            self.assertEqual(len(changes), 13)
 
             loaded = AppSettings()
             self.assertTrue(loaded.load(path))
@@ -41,6 +43,11 @@ class AppSettingsTests(unittest.TestCase):
             self.assertEqual(loaded.output_device, "WASAPI\x1fOutput")
             self.assertEqual(loaded.input_block_size, 2048)
             self.assertEqual(loaded.output_block_size, 4096)
+            self.assertEqual(loaded.input_routing, (3, 1))
+            self.assertEqual(
+                loaded.output_routing,
+                (True, False, True, True),
+            )
             self.assertEqual(
                 loaded.module_setting("spectrum", "generator_mode"),
                 "pink noise",

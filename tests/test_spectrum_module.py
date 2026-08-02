@@ -14,11 +14,11 @@ from spectrum_app.core.model import AxisSpec
 from spectrum_app.modules.spectrum import SpectrumModule
 from spectrum_app.modules.spectrum.settings import SpectrumSettingsWindow
 from spectrum_app.modules.spectrum.view import SpectrumView
+from tests.test_dpg_lifecycle import FakeDpgBackend
 
 
 class FakeAudioInput:
     sample_rate = 8_000
-    channels = 2
     block_size = 256
 
     def __init__(self) -> None:
@@ -42,7 +42,6 @@ class FakeAudioInput:
 
 class FakeAudioOutput:
     sample_rate = 8_000
-    channels = 2
     block_size = 256
 
     def __init__(self) -> None:
@@ -95,6 +94,7 @@ class SpectrumModuleTests(unittest.TestCase):
             patch.object(SpectrumView, "build"),
             patch.object(SpectrumView, "destroy"),
             patch.object(SpectrumView, "set_enabled"),
+            patch.object(SpectrumView, "update_levels"),
             patch.object(SpectrumSettingsWindow, "build"),
             patch.object(SpectrumSettingsWindow, "destroy"),
             patch(
@@ -123,6 +123,8 @@ class SpectrumModuleTests(unittest.TestCase):
                 self.assertGreater(audio_output.written_samples, 0)
                 self.assertIsInstance(measurement.module_state["recording"], ASignal)
                 self.assertIsInstance(measurement.module_state["generator"], ASignal)
+                self.assertGreater(len(measurement.module_state["level_time"]), 0)
+                self.assertEqual(measurement.module_state["level_values"].shape[1], 2)
                 self.assertEqual(len(measurement.graphs), 1)
                 self.assertEqual(measurement.graphs[0].y_axis, AxisSpec.LEVEL)
                 self.assertTrue(app.app_state.graph_data_changed)
@@ -149,6 +151,7 @@ class SpectrumModuleTests(unittest.TestCase):
             patch.object(SpectrumView, "build"),
             patch.object(SpectrumView, "destroy"),
             patch.object(SpectrumView, "set_enabled"),
+            patch.object(SpectrumView, "update_levels"),
             patch.object(SpectrumSettingsWindow, "build"),
             patch.object(SpectrumSettingsWindow, "destroy"),
             patch(
@@ -165,7 +168,50 @@ class SpectrumModuleTests(unittest.TestCase):
                 self.assertIsNone(
                     acquisition_class.call_args.kwargs["online_interval"]
                 )
+                self.assertIn("on_level", acquisition_class.call_args.kwargs)
                 acquisition.start.assert_called_once_with()
+            finally:
+                module.deactivate()
+                module.shutdown()
+
+    def test_view_builds_two_channel_compact_level_plot(self) -> None:
+        backend = FakeDpgBackend()
+        app = SpectrumApplication()
+        measurement = app.create_measurement("spectrum")
+        module = cast(SpectrumModule, app.module_manager.module("spectrum"))
+
+        with (
+            patch("spectrum_app.modules.spectrum.view.dpg", backend),
+            patch("spectrum_app.modules.spectrum.settings.dpg", backend),
+        ):
+            module.initialize(app)
+            module.activate(measurement)
+            try:
+                level_plot = next(
+                    call
+                    for call in backend.calls
+                    if call[0] == "plot"
+                    and call[1].get("tag") == SpectrumView.LEVEL_PLOT
+                )
+                self.assertNotIn("label", level_plot[1])
+                level_axes = [
+                    call
+                    for call in backend.calls
+                    if call[0] == "add_plot_axis"
+                    and call[2].get("tag")
+                    in (SpectrumView.LEVEL_X_AXIS, SpectrumView.LEVEL_Y_AXIS)
+                ]
+                self.assertTrue(
+                    all("label" not in call[2] for call in level_axes)
+                )
+                series = [
+                    call
+                    for call in backend.calls
+                    if call[0] == "add_line_series"
+                    and call[3].get("tag")
+                    in (SpectrumView.LEVEL_SERIES_1, SpectrumView.LEVEL_SERIES_2)
+                ]
+                self.assertEqual(len(series), 2)
             finally:
                 module.deactivate()
                 module.shutdown()

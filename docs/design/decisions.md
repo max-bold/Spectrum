@@ -76,6 +76,28 @@
   stage and the result from those recordings without a new capture.
 - Impedance exposes its experimental SPICE fit only while the module is active.
   The fit runs outside the UI thread and is explicitly marked as needing tests.
+- THD+N uses a fixed-level `0.9` logarithmic sweep and records logical input A.
+  Input and output blocking calls run on separate threads; adaptive
+  mask calibration and STFT analysis run on a third analyzer thread. Only the
+  final THD+N percentage curve is published as shared `GraphData`.
+- Audio modules see two routed logical input channels (A/B) and one mono output.
+  Physical input selection and mono fan-out to enabled device outputs belong to
+  `AudioService` and application settings, never to measurement modules.
+- THD keeps its raw recording, generated sweep, level history, mask fit, and
+  result in `Measurement.module_state`. Its STFT and mask preferences live in
+  `AppSettings` under the `thd` namespace.
+- Phase measures logical input A relative to electrical reference B using a
+  fixed-level `0.9` logarithmic sweep. Audio capture and playback use separate
+  workers, and transfer-function analysis uses a third worker. The module
+  publishes only unwrapped phase as shared `GraphData`; its compact response
+  plot, fitted delay, raw recording, and generator remain in `module_state`.
+- Phase delay is fitted within a user-selected subrange of the measurement
+  band. A manual distance correction is converted with 343 m/s and added to
+  the fitted delay before compensation. Phase wrapping and degrees-per-decade
+  conversion remain responsibilities of the shared plot.
+- Export commands share the extensible `File -> Export` submenu. Plot PNG
+  export captures the Dear PyGui framebuffer and crops the rendered plot with
+  HiDPI scaling; it does not rebuild the graph through Matplotlib.
 - Module-wide preferences live under the module's namespace in `AppSettings`
   and are saved with the application settings, independently of project files.
   Spectrum stores its generator choice, Welch bucket size, and optional online
@@ -95,6 +117,13 @@
   the current session. It never restores an in-progress measurement.
 - Pickle project files are trusted local data and must not be opened from
   untrusted sources. Import of the older JSON `.bms` format may be added later.
+- Individual measurements use the versioned JSON `.bmm` interchange format.
+  Raw audio is stored as little-endian `float32`, compressed with zlib, and
+  encoded as base64; calculated NumPy arrays preserve their dtype. File
+  compression and I/O run outside the GUI thread.
+- Imported measurements receive new measurement and graph IDs, are appended to
+  the current project, activated, and made visible. Import is rejected when its
+  module is unavailable.
 
 ## Open decisions
 

@@ -1,14 +1,18 @@
+from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from spectrum_app import SpectrumApplication
+from spectrum_app.core.audio import AudioDevice
 from spectrum_app.core.dpg import DearPyGuiRuntime
 from spectrum_app.core.model import AxisSpec, GraphData
 from spectrum_app.gui.main_window import MainWindow
 from spectrum_app.modules.spectrum import SpectrumModule
+from spectrum_app.modules.phase.settings import PhaseSettingsWindow
 from spectrum_app.modules.spectrum.settings import SpectrumSettingsWindow
+from spectrum_app.modules.thd.settings import THDSettingsWindow
 
 
 class FakeContainer:
@@ -41,6 +45,7 @@ class FakeDpgBackend:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
         self.running_values = iter((True, False))
+        self.shown_windows: list[str] = []
 
     def create_context(self) -> None:
         self.calls.append(("create_context",))
@@ -78,6 +83,9 @@ class FakeDpgBackend:
 
     def group(self, **kwargs) -> FakeContainer:
         return self._container("group", **kwargs)
+
+    def drawlist(self, **kwargs) -> FakeContainer:
+        return self._container("drawlist", **kwargs)
 
     def collapsing_header(self, **kwargs) -> FakeContainer:
         return self._container("collapsing_header", **kwargs)
@@ -127,9 +135,11 @@ class FakeDpgBackend:
         self.calls.append(("add_plot_axis", axis, kwargs))
         return kwargs.get("tag", "plot_axis")
 
-    def add_line_series(
-        self, x: list[float], y: list[float], **kwargs
-    ) -> str:
+    def add_viewport_drawlist(self, **kwargs) -> str:
+        self.calls.append(("add_viewport_drawlist", kwargs))
+        return kwargs.get("tag", "viewport_drawlist")
+
+    def add_line_series(self, x: list[float], y: list[float], **kwargs) -> str:
         self.calls.append(("add_line_series", x, y, kwargs))
         return kwargs.get("tag", "line_series")
 
@@ -217,6 +227,50 @@ class FakeDpgBackend:
         self.calls.append(("get_item_rect_size", tag))
         return [1200, 800]
 
+    def get_item_rect_min(self, tag: str) -> list[int]:
+        self.calls.append(("get_item_rect_min", tag))
+        return [20, 40]
+
+    def get_item_rect_max(self, tag: str) -> list[int]:
+        self.calls.append(("get_item_rect_max", tag))
+        return [820, 640]
+
+    def get_text_size(self, text: str) -> tuple[int, int]:
+        self.calls.append(("get_text_size", text))
+        return (88, 15)
+
+    def get_windows(self) -> list[str]:
+        self.calls.append(("get_windows",))
+        return [MainWindow.TAG, *self.shown_windows]
+
+    def get_item_alias(self, item: str) -> str:
+        self.calls.append(("get_item_alias", item))
+        return item
+
+    def get_item_type(self, item: str) -> str:
+        self.calls.append(("get_item_type", item))
+        return "mvAppItemType::mvWindowAppItem"
+
+    def is_item_shown(self, item: str) -> bool:
+        self.calls.append(("is_item_shown", item))
+        return item == MainWindow.TAG or item in self.shown_windows
+
+    def get_item_state(self, tag: str) -> dict[str, list[int]]:
+        self.calls.append(("get_item_state", tag))
+        return {"rect_size": [1200, 200]}
+
+    def draw_rectangle(self, point1, point2, **kwargs) -> str:
+        self.calls.append(("draw_rectangle", point1, point2, kwargs))
+        return f"rectangle::{len(self.calls)}"
+
+    def draw_text(self, position, text: str, **kwargs) -> str:
+        self.calls.append(("draw_text", position, text, kwargs))
+        return f"draw_text::{len(self.calls)}"
+
+    def draw_line(self, point1, point2, **kwargs) -> str:
+        self.calls.append(("draw_line", point1, point2, kwargs))
+        return f"line::{len(self.calls)}"
+
     def set_item_pos(self, tag: str, position: list[float]) -> None:
         self.calls.append(("set_item_pos", tag, position))
 
@@ -274,9 +328,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
         app = SpectrumApplication()
         app.dpg = DearPyGuiRuntime(backend)
         app.main_window = MainWindow(app)
-        app.frame_callbacks.append(
-            lambda: backend.calls.append(("frame_callback",))
-        )
+        app.frame_callbacks.append(lambda: backend.calls.append(("frame_callback",)))
 
         with (
             patch.object(app._audio_service, "start"),
@@ -287,8 +339,14 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
             patch("spectrum_app.gui.project.dpg", backend),
+            patch("spectrum_app.gui.measurement_io.dpg", backend),
             patch("spectrum_app.modules.spectrum.view.dpg", backend),
             patch("spectrum_app.modules.spectrum.settings.dpg", backend),
+            patch("spectrum_app.modules.phase.view.dpg", backend),
+            patch("spectrum_app.modules.phase.settings.dpg", backend),
+            patch("spectrum_app.modules.thd.view.dpg", backend),
+            patch("spectrum_app.gui.controls.level_meter.dpg", backend),
+            patch("spectrum_app.modules.thd.settings.dpg", backend),
         ):
             app.run()
 
@@ -315,6 +373,56 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             spectrum_settings_item[1]["parent"],
             app.main_window.settings_menu,
         )
+        thd_settings_item = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_menu_item"
+            and call[1].get("tag") == THDSettingsWindow.MENU_ITEM
+        )
+        self.assertEqual(thd_settings_item[1]["label"], "THD")
+        phase_settings_item = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_menu_item"
+            and call[1].get("tag") == PhaseSettingsWindow.MENU_ITEM
+        )
+        self.assertEqual(phase_settings_item[1]["label"], "Phase")
+        export_menu = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_menu"
+            and call[1].get("tag") == app.main_window.export_menu
+        )
+        self.assertEqual(export_menu[1]["label"], "Export")
+        import_menu = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_menu"
+            and call[1].get("tag") == app.main_window.import_menu
+        )
+        self.assertEqual(import_menu[1]["label"], "Import")
+        plot_export = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_menu_item"
+            and call[1].get("parent") == app.main_window.export_menu
+        )
+        self.assertEqual(plot_export[1]["label"], "Plot")
+        measurement_import = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_menu_item"
+            and call[1].get("parent") == app.main_window.import_menu
+        )
+        self.assertEqual(measurement_import[1]["label"], "Measurement")
+        measurement_export = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_menu_item"
+            and call[1].get("parent") == app.main_window.export_menu
+            and call is not plot_export
+        )
+        self.assertEqual(measurement_export[1]["label"], "Measurement")
 
     def test_main_window_exposes_module_hosts_and_status(self) -> None:
         backend = FakeDpgBackend()
@@ -329,9 +437,11 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
             patch("spectrum_app.gui.project.dpg", backend),
+            patch("spectrum_app.gui.measurement_io.dpg", backend),
         ):
             app.dpg.create_context()
             app.main_window.build()
+            app.main_window.plot.update()
             app.main_window.set_status_text("Ready")
             settings_item = next(
                 call
@@ -350,6 +460,8 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
                 ("File", app.main_window.file_menu),
                 ("Tools", app.main_window.tools_menu),
                 ("Settings", app.main_window.settings_menu),
+                ("Import", app.main_window.import_menu),
+                ("Export", app.main_window.export_menu),
             ],
         )
 
@@ -372,6 +484,45 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             }.issubset(host_tags)
         )
         self.assertIn(app.main_window.plot_host, plot_tags)
+        watermark_layer = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_viewport_drawlist"
+            and call[1].get("tag") == app.main_window.plot.watermark_layer
+        )
+        self.assertTrue(watermark_layer[1]["front"])
+        watermark = next(
+            call
+            for call in backend.calls
+            if call[0] == "draw_text"
+            and call[3].get("tag") == app.main_window.plot.watermark
+        )
+        self.assertEqual(watermark[2], "BM Spectrum")
+        self.assertEqual(
+            watermark[3]["parent"],
+            app.main_window.plot.watermark_layer,
+        )
+        self.assertLess(watermark[3]["color"][3], 255)
+        self.assertIn(
+            (
+                "configure_item",
+                app.main_window.plot.watermark,
+                {"pos": (696.0, 60.0), "show": True},
+            ),
+            backend.calls,
+        )
+
+        backend.shown_windows.append(app.main_window.settings_window.tag)
+        with patch("spectrum_app.gui.plot.dpg", backend):
+            app.main_window.plot.update()
+        self.assertIn(
+            (
+                "configure_item",
+                app.main_window.plot.watermark,
+                {"show": False},
+            ),
+            backend.calls,
+        )
         self.assertIn(
             ("set_value", app.main_window.status, "Ready"),
             backend.calls,
@@ -398,14 +549,14 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
             patch("spectrum_app.gui.project.dpg", backend),
+            patch("spectrum_app.gui.measurement_io.dpg", backend),
         ):
             window.build()
             add_button_call = next(
                 call
                 for call in backend.calls
                 if call[0] == "add_button"
-                and call[1].get("tag")
-                == window.app_state_panel.add_measurement_button
+                and call[1].get("tag") == window.app_state_panel.add_measurement_button
             )
             add_button_call[1]["callback"]()
 
@@ -426,8 +577,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
                 call
                 for call in backend.calls
                 if call[0] == "add_image_button"
-                and call[2].get("tag")
-                == window.app_state_panel._delete_tag(first.id)
+                and call[2].get("tag") == window.app_state_panel._delete_tag(first.id)
             )
             self.assertEqual(
                 delete_button_call[1],
@@ -454,6 +604,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
             patch("spectrum_app.gui.project.dpg", backend),
+            patch("spectrum_app.gui.measurement_io.dpg", backend),
             patch("spectrum_app.modules.spectrum.view.dpg", backend),
             patch("spectrum_app.modules.spectrum.settings.dpg", backend),
         ):
@@ -525,9 +676,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
                 AxisSpec.PHASE,
             ),
         ]
-        app.app_state.visible_graph_ids = [
-            graph.id for graph in measurement.graphs
-        ]
+        app.app_state.visible_graph_ids = [graph.id for graph in measurement.graphs]
         app.settings.impedance_scale = "log"
         app.settings.phase_unit = "deg/dec"
         app.settings.frequency_range = (30.0, 18_000.0)
@@ -540,13 +689,12 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
             patch("spectrum_app.gui.project.dpg", backend),
+            patch("spectrum_app.gui.measurement_io.dpg", backend),
         ):
             window.build()
             window.plot.update()
 
-        series_calls = [
-            call for call in backend.calls if call[0] == "add_line_series"
-        ]
+        series_calls = [call for call in backend.calls if call[0] == "add_line_series"]
         self.assertEqual(len(series_calls), 3)
         self.assertEqual(
             [call[3]["parent"] for call in series_calls],
@@ -612,6 +760,82 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
         self.assertEqual(app.settings.frequency_range, (10.0, 20_000.0))
         self.assertTrue(app.app_state.graph_data_changed)
 
+    def test_audio_settings_build_and_update_routing_matrices(self) -> None:
+        backend = FakeDpgBackend()
+        app = SpectrumApplication()
+        input_device = AudioDevice(
+            id="input",
+            index=0,
+            name="Input",
+            host_api="Test",
+            sample_rate=48_000,
+            input_channels=4,
+            output_channels=0,
+        )
+        output_device = AudioDevice(
+            id="output",
+            index=1,
+            name="Output",
+            host_api="Test",
+            sample_rate=48_000,
+            input_channels=0,
+            output_channels=4,
+        )
+        app._audio_service._input_devices = (  # pyright: ignore[reportPrivateUsage]
+            input_device,
+        )
+        app._audio_service._output_devices = (  # pyright: ignore[reportPrivateUsage]
+            output_device,
+        )
+        app._audio_service._default_input_id = (  # pyright: ignore[reportPrivateUsage]
+            input_device.id
+        )
+        app._audio_service._default_output_id = (  # pyright: ignore[reportPrivateUsage]
+            output_device.id
+        )
+        window = MainWindow(app)
+
+        with patch("spectrum_app.gui.settings.dpg", backend):
+            window.settings_window.build()
+
+            input_route = next(
+                call
+                for call in backend.calls
+                if call[0] == "add_checkbox"
+                and call[1].get("tag") == window.settings_window._input_route_tag(0, 2)
+            )
+            input_route[1]["callback"](
+                input_route[1]["tag"],
+                True,
+                input_route[1]["user_data"],
+            )
+
+            output_route = next(
+                call
+                for call in backend.calls
+                if call[0] == "add_checkbox"
+                and call[1].get("tag") == window.settings_window._output_route_tag(1)
+            )
+            output_route[1]["callback"](
+                output_route[1]["tag"],
+                False,
+                output_route[1]["user_data"],
+            )
+
+        self.assertEqual(app.settings.input_routing, (2, 1))
+        self.assertEqual(
+            app.settings.output_routing,
+            (True, False, True, True),
+        )
+        self.assertIn(
+            (
+                "set_value",
+                window.settings_window._input_route_tag(0, 0),
+                False,
+            ),
+            backend.calls,
+        )
+
     def test_plot_keeps_previous_render_and_warns_about_fourth_axis(self) -> None:
         backend = FakeDpgBackend()
         app = SpectrumApplication()
@@ -629,13 +853,9 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
                 frequency,
                 AxisSpec.IMPEDANCE,
             ),
-            GraphData(
-                "Phase", x, np.array([-10.0, 20.0]), frequency, AxisSpec.PHASE
-            ),
+            GraphData("Phase", x, np.array([-10.0, 20.0]), frequency, AxisSpec.PHASE),
         ]
-        app.app_state.visible_graph_ids = [
-            graph.id for graph in measurement.graphs
-        ]
+        app.app_state.visible_graph_ids = [graph.id for graph in measurement.graphs]
         window = MainWindow(app)
 
         with (
@@ -645,6 +865,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
             patch("spectrum_app.gui.project.dpg", backend),
+            patch("spectrum_app.gui.measurement_io.dpg", backend),
         ):
             window.build()
             window.plot.update()
@@ -708,6 +929,29 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             equal_nan=True,
         )
         np.testing.assert_array_equal(phase.y, [170.0, 190.0, 200.0])
+
+    def test_plot_export_waits_for_dialog_to_disappear(self) -> None:
+        backend = FakeDpgBackend()
+        app = SpectrumApplication()
+        app.app_state.graph_data_changed = False
+        window = MainWindow(app)
+        app.main_window.set_status_text = lambda text: None
+        exporter = MagicMock()
+        window.plot.exporter = exporter
+
+        with patch("spectrum_app.gui.plot.dpg", backend):
+            window.plot.export_png(
+                window.plot.export_dialog,
+                {"file_path_name": "D:/plot.png"},
+            )
+            window.plot.update()
+            window.plot.update()
+            exporter.export.assert_not_called()
+
+            window.plot.update()
+
+        exporter.export.assert_called_once()
+        self.assertEqual(exporter.export.call_args.args[:2], (Path("D:/plot.png"), window.plot.tag))
 
     def test_destroy_context_is_safe_before_initialization(self) -> None:
         backend = FakeDpgBackend()

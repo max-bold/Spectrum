@@ -12,6 +12,8 @@ The package is intentionally split into pure analysis modules and optional audio
 - `audioanalysis.generators` - test signals and continuous generator workers.
 - `audioanalysis.smoothing` - logarithmic smoothing windows and grids.
 - `audioanalysis.spectrum` - periodogram/Welch analysis and reference-channel math.
+- `audioanalysis.phase` - two-channel transfer response, weighted delay
+  estimation, delay compensation, and shared phase display transformations.
 - `audioanalysis.levels` - peak normalization, channel-shape conversion, and level-meter calculations.
 - `audioanalysis.audioio` - `sounddevice` device and play/record helpers.
 - `audioanalysis.thd` - conventional spectrum-based THD and the semi-analog

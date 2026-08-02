@@ -2,7 +2,15 @@ import unittest
 
 import numpy as np
 
-from audioanalysis.phase import break_phase_wraps, phase_derivative, wrap_phase
+from audioanalysis import (
+    ASignal,
+    FrequencyBand,
+    PhaseConfig,
+    analyze_phase,
+    break_phase_wraps,
+    phase_derivative,
+    wrap_phase,
+)
 
 
 class PhaseDerivativeTests(unittest.TestCase):
@@ -58,6 +66,45 @@ class PhaseDerivativeTests(unittest.TestCase):
                 np.array([0.0, 10.0, 20.0]),
                 smoothing_sigma=0,
             )
+
+
+class PhaseAnalysisTests(unittest.TestCase):
+    def test_impulse_delay_is_estimated_and_removed_from_unwrapped_phase(self) -> None:
+        sample_rate = 48_000
+        samples = 4096
+        delay_samples = 48
+        reference = np.zeros(samples, dtype=np.float32)
+        measured = np.zeros(samples, dtype=np.float32)
+        reference[200] = 0.5
+        measured[200 + delay_samples] = 0.5
+        recording = ASignal(
+            np.column_stack((measured, reference)),
+            sample_rate,
+        )
+
+        result = analyze_phase(
+            recording,
+            PhaseConfig(
+                band=FrequencyBand(100.0, 15_000.0),
+                delay_fit_band=FrequencyBand(200.0, 10_000.0),
+                points=128,
+                smoothing_octaves=1.0 / 3.0,
+            ),
+        )
+
+        self.assertAlmostEqual(
+            result.estimated_delay_seconds,
+            delay_samples / sample_rate,
+            places=7,
+        )
+        self.assertEqual(result.frequency.shape, (128,))
+        self.assertLess(float(np.nanmax(np.abs(result.phase_degrees))), 0.1)
+
+    def test_phase_analysis_requires_logical_a_and_b(self) -> None:
+        recording = ASignal(np.ones(1024), 48_000)
+
+        with self.assertRaisesRegex(ValueError, "channels A and B"):
+            analyze_phase(recording, PhaseConfig())
 
 
 if __name__ == "__main__":

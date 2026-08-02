@@ -4,6 +4,7 @@ import dearpygui.dearpygui as dpg
 
 from spectrum_app.gui.app_state import AppStatePanel
 from spectrum_app.gui.measurement import MeasurementPanel
+from spectrum_app.gui.measurement_io import MeasurementDialogs
 from spectrum_app.gui.plot import Plot
 from spectrum_app.gui.project import ProjectDialogs
 from spectrum_app.gui.settings import SettingsWindow
@@ -23,10 +24,13 @@ class MainWindow:
     def __init__(self, app: "SpectrumApplication") -> None:
         self.app = app
         self.file_menu = "app::file_menu"
+        self.import_menu = "app::import_menu"
+        self.export_menu = "app::export_menu"
         self.tools_menu = "app::tools_menu"
         self.settings_menu = "app::settings_menu"
         self.settings_window = SettingsWindow(app)
         self.project_dialogs = ProjectDialogs(app)
+        self.measurement_dialogs = MeasurementDialogs(app)
         self.plot = Plot(app)
         self.plot_host = self.plot.tag
         self.bottom_host = "app::bottom_host"
@@ -81,10 +85,23 @@ class MainWindow:
                     dpg.add_text("",tag=self.status)
 
         self.project_dialogs.build(self.file_menu)
+        dpg.add_menu(
+            label="Import",
+            tag=self.import_menu,
+            parent=self.file_menu,
+        )
+        dpg.add_menu(
+            label="Export",
+            tag=self.export_menu,
+            parent=self.file_menu,
+        )
+        self.plot.build_export(self.export_menu)
+        self.measurement_dialogs.build(self.import_menu, self.export_menu)
         self.settings_window.build()
         self._built = True
 
     def update(self) -> None:
+        self.measurement_dialogs.update()
         self.plot.update()
         self.measurement_panel.update()
         self.settings_window.update()
@@ -96,6 +113,12 @@ class MainWindow:
         dpg.set_value(self.status, text)
 
     def project_loaded(self) -> None:
+        if not self._built:
+            return
+        self.app_state_panel.rebuild()
+        self.measurement_panel.update(force=True)
+
+    def measurement_added(self) -> None:
         if not self._built:
             return
         self.app_state_panel.rebuild()

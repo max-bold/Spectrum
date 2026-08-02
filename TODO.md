@@ -28,7 +28,7 @@ v0.2.4
 
 v0.3
 - Implement multi-record mode with averaging
-- Implement THD calculation and display using Farina's method
++ Implement semi-analog swept THD+N calculation and display - done
 
 v0.3.1
 - Add schema versions and migrations for module state

@@ -36,7 +36,16 @@ from .impedance_model import (
     format_spice_table,
     speaker_impedance,
 )
-from .phase import break_phase_wraps, phase_derivative, wrap_phase
+from .phase import (
+    SPEED_OF_SOUND_M_S,
+    PhaseConfig,
+    PhaseResult,
+    analyze_phase,
+    break_phase_wraps,
+    estimate_phase_delay,
+    phase_derivative,
+    wrap_phase,
+)
 from .smoothing import SmoothingWindow, grid_smooth, log_smooth, log_window
 from .spectrum import (
     AnalysisMethod,
@@ -71,10 +80,13 @@ __all__ = [
     "ImpedanceConfig",
     "ImpedanceResult",
     "PinkNoiseThread",
+    "PhaseConfig",
+    "PhaseResult",
     "ReferenceMode",
     "SmoothingWindow",
     "SpectrumConfig",
     "SpectrumResult",
+    "SPEED_OF_SOUND_M_S",
     "SpiceTableValues",
     "SemiAnalogTHDConfig",
     "SemiAnalogTHDResult",
@@ -86,6 +98,7 @@ __all__ = [
     "CHANNEL_CALIBRATION_DURATION",
     "analyze_recording_levels",
     "analyze_semi_analog_thd",
+    "analyze_phase",
     "analyze_spectrum",
     "as_channels",
     "break_phase_wraps",
@@ -97,6 +110,7 @@ __all__ = [
     "channel_calibration_config",
     "current_phase_angle",
     "estimate_reference_resistor",
+    "estimate_phase_delay",
     "fit_impedance",
     "fit_impedance_auto",
     "format_spice_table",

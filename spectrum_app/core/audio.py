@@ -1,13 +1,17 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from threading import Condition, Event, RLock, Thread, current_thread
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
 import sounddevice as sd
 
-from spectrum_app.core.settings import AppSettings
+from spectrum_app.core.settings import (
+    AppSettings,
+    InputRouting,
+    OutputRouting,
+)
 
 
 AudioDirection = Literal["input", "output"]
@@ -42,6 +46,7 @@ class AudioService:
 
     DEFAULT_INPUT_LABEL = "Default input device"
     DEFAULT_OUTPUT_LABEL = "Default output device"
+    UNSUPPORTED_HOST_APIS = frozenset({"Windows WDM-KS"})
 
     def __init__(
         self,
@@ -61,6 +66,10 @@ class AudioService:
         self._refreshing = False
         self._active_sessions = 0
         self._streams: dict[AudioDirection, Any] = {}
+        self._stream_routing: dict[
+            AudioDirection,
+            InputRouting | OutputRouting,
+        ] = {}
         self._input_devices: tuple[AudioDevice, ...] = ()
         self._output_devices: tuple[AudioDevice, ...] = ()
         self._default_input_id = ""
@@ -85,6 +94,41 @@ class AudioService:
     @property
     def selected_output_device(self) -> AudioDevice | None:
         return self._selected_device("output")
+
+    @property
+    def input_routing(self) -> InputRouting:
+        device = self.selected_input_device
+        if device is None:
+            return None, None
+        defaults = self.default_input_routing(device.input_channels)
+        normalized = tuple(
+            channel
+            if channel is None or channel < device.input_channels
+            else defaults[index]
+            for index, channel in enumerate(self.settings.input_routing)
+        )
+        return normalized[0], normalized[1]
+
+    @property
+    def output_routing(self) -> OutputRouting:
+        device = self.selected_output_device
+        if device is None:
+            return ()
+        configured = self.settings.output_routing
+        return tuple(
+            configured[index] if index < len(configured) else True
+            for index in range(device.output_channels)
+        )
+
+    @staticmethod
+    def default_input_routing(channels: int) -> InputRouting:
+        if channels <= 0:
+            return None, None
+        return (0, 1) if channels > 1 else (0, 0)
+
+    @staticmethod
+    def default_output_routing(channels: int) -> OutputRouting:
+        return (True,) * max(0, channels)
 
     def start(self) -> None:
         with self._condition:
@@ -140,9 +184,26 @@ class AudioService:
                 if device is None:
                     raise AudioError(f"Selected {direction} device is unavailable")
 
-                channels = device.channels(direction)
-                if channels <= 0:
+                physical_channels = device.channels(direction)
+                if physical_channels <= 0:
                     raise AudioError(f"Device does not support {direction}")
+
+                routing: InputRouting | OutputRouting
+                if direction == "input":
+                    routing = self.input_routing
+                    selected_channels = [
+                        channel for channel in routing if channel is not None
+                    ]
+                else:
+                    routing = self.output_routing
+                    selected_channels = [
+                        index
+                        for index, enabled in enumerate(routing)
+                        if enabled
+                    ]
+                native_channels = (
+                    max(selected_channels) + 1 if selected_channels else 1
+                )
 
                 stream_type = (
                     self._backend.InputStream
@@ -153,13 +214,20 @@ class AudioService:
                     native_stream: Any = stream_type(
                         device=device.index,
                         samplerate=device.sample_rate,
-                        channels=channels,
+                        channels=native_channels,
                         dtype="float32",
                         blocksize=0,
                     )
                     stream = native_stream
                     native_stream.start()
                 self._streams[direction] = stream
+                if direction == "input":
+                    self._stream_routing[direction] = cast(InputRouting, routing)
+                else:
+                    output_routing = cast(OutputRouting, routing)
+                    self._stream_routing[direction] = output_routing[
+                        :native_channels
+                    ]
                 return True
             except Exception as error:
                 if stream is not None:
@@ -174,6 +242,7 @@ class AudioService:
     def close_stream(self, direction: AudioDirection) -> bool:
         with self._operation_lock:
             stream = self._streams.pop(direction, None)
+            self._stream_routing.pop(direction, None)
             if stream is None:
                 return True
             try:
@@ -196,26 +265,47 @@ class AudioService:
             raise ValueError("Sample count must be positive")
         with self._operation_lock:
             stream = self._streams.get("input")
+            routing = self._stream_routing.get("input")
         if stream is None:
             raise AudioError("Audio input is not open")
         try:
             data, overflowed = stream.read(samples)
             if overflowed:
                 raise AudioError("Audio input overflow")
-            return np.asarray(data, dtype=np.float32)
+            physical = np.asarray(data, dtype=np.float32)
+            if physical.ndim != 2:
+                raise AudioError("Audio input returned an invalid array")
+            logical = np.zeros((len(physical), 2), dtype=np.float32)
+            if not isinstance(routing, tuple) or len(routing) != 2:
+                raise AudioError("Audio input routing is unavailable")
+            for logical_index, physical_index in enumerate(routing):
+                if physical_index is not None:
+                    logical[:, logical_index] = physical[:, physical_index]
+            return logical
         except Exception as error:
             self.close_stream("input")
             self._report_error(error)
             raise AudioError(str(error)) from error
 
     def write(self, data: NDArray[Any]) -> None:
-        samples = np.asarray(data, dtype=np.float32)
         with self._operation_lock:
             stream = self._streams.get("output")
+            routing = self._stream_routing.get("output")
         if stream is None:
             raise AudioError("Audio output is not open")
         try:
-            underflowed = stream.write(samples)
+            logical = np.asarray(data, dtype=np.float32)
+            if logical.ndim != 1:
+                raise AudioError(
+                    "Audio output data must be a one-dimensional mono array"
+                )
+            if not isinstance(routing, tuple):
+                raise AudioError("Audio output routing is unavailable")
+            physical = np.zeros((len(logical), len(routing)), dtype=np.float32)
+            for physical_index, enabled in enumerate(routing):
+                if enabled:
+                    physical[:, physical_index] = logical
+            underflowed = stream.write(physical)
             if underflowed:
                 raise AudioError("Audio output underflow")
         except Exception as error:
@@ -277,6 +367,8 @@ class AudioService:
             id_counts: dict[str, int] = {}
             for index, raw_device in enumerate(devices):
                 device = self._make_device(index, raw_device, host_apis, id_counts)
+                if device.host_api in self.UNSUPPORTED_HOST_APIS:
+                    continue
                 if device.input_channels > 0:
                     input_devices.append(device)
                 if device.output_channels > 0:
@@ -369,11 +461,6 @@ class AudioInput:
         return device.sample_rate if device is not None else 0
 
     @property
-    def channels(self) -> int:
-        device = self._service.selected_input_device
-        return device.input_channels if device is not None else 0
-
-    @property
     def block_size(self) -> int:
         return self._service.settings.input_block_size
 
@@ -395,11 +482,6 @@ class AudioOutput:
     def sample_rate(self) -> int:
         device = self._service.selected_output_device
         return device.sample_rate if device is not None else 0
-
-    @property
-    def channels(self) -> int:
-        device = self._service.selected_output_device
-        return device.output_channels if device is not None else 0
 
     @property
     def block_size(self) -> int:

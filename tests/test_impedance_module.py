@@ -25,7 +25,6 @@ from tests.test_dpg_lifecycle import FakeDpgBackend
 
 class PreparedAudioInput:
     sample_rate = 8_000
-    channels = 2
     block_size = 512
 
     def __init__(self) -> None:
@@ -58,7 +57,6 @@ class PreparedAudioInput:
 
 class DiscardingAudioOutput:
     sample_rate = 8_000
-    channels = 2
     block_size = 512
 
     def open(self) -> bool:
@@ -78,7 +76,10 @@ class ImpedanceModuleTests(unittest.TestCase):
         measurement = app.create_measurement("impedance")
         module = cast(ImpedanceModule, app.module_manager.module("impedance"))
 
-        with patch("spectrum_app.modules.impedance.view.dpg", backend):
+        with (
+            patch("spectrum_app.modules.impedance.view.dpg", backend),
+            patch("spectrum_app.gui.controls.level_meter.dpg", backend),
+        ):
             module.initialize(app)
             module.activate(measurement)
             try:
@@ -89,6 +90,14 @@ class ImpedanceModuleTests(unittest.TestCase):
                         "configure_item",
                         ImpedanceView.CALIBRATION_DIALOG,
                         {"show": True},
+                    ),
+                    backend.calls,
+                )
+                self.assertIn(
+                    (
+                        "set_item_pos",
+                        ImpedanceView.CALIBRATION_DIALOG,
+                        [330.0, 250.0],
                     ),
                     backend.calls,
                 )
@@ -126,7 +135,10 @@ class ImpedanceModuleTests(unittest.TestCase):
             points=128,
         )
 
-        with patch("spectrum_app.modules.impedance.view.dpg", backend):
+        with (
+            patch("spectrum_app.modules.impedance.view.dpg", backend),
+            patch("spectrum_app.gui.controls.level_meter.dpg", backend),
+        ):
             module.initialize(app)
             module.activate(measurement)
             try:
@@ -189,7 +201,10 @@ class ImpedanceModuleTests(unittest.TestCase):
         module = cast(ImpedanceModule, app.module_manager.module("impedance"))
         self.assertIsInstance(module, ImpedanceModule)
 
-        with patch("spectrum_app.modules.impedance.view.dpg", backend):
+        with (
+            patch("spectrum_app.modules.impedance.view.dpg", backend),
+            patch("spectrum_app.gui.controls.level_meter.dpg", backend),
+        ):
             module.initialize(app)
             module.activate(measurement)
 
@@ -211,6 +226,31 @@ class ImpedanceModuleTests(unittest.TestCase):
             self.assertEqual(
                 test_tone_item[1]["parent"], app.main_window.tools_menu
             )
+            calibrate_item = next(
+                call
+                for call in backend.calls
+                if call[0] == "add_menu_item"
+                and call[1].get("tag") == ImpedanceView.CALIBRATE_ITEM
+            )
+            self.assertEqual(calibrate_item[1]["label"], "Calibrate")
+            meter = next(
+                call
+                for call in backend.calls
+                if call[0] == "drawlist"
+                and call[1].get("tag") == ImpedanceView.LEVEL_METER
+            )
+            self.assertEqual(meter[1]["width"], 55)
+
+            measurement.module_state["workflow"] = "completed"
+            calibrate_item[1]["callback"]()
+            self.assertIn(
+                (
+                    "configure_item",
+                    ImpedanceView.CALIBRATION_RESISTORS,
+                    {"show": True},
+                ),
+                backend.calls,
+            )
             self.assertEqual(
                 [graph.y_axis for graph in measurement.graphs],
                 [AxisSpec.IMPEDANCE, AxisSpec.PHASE],
@@ -223,6 +263,7 @@ class ImpedanceModuleTests(unittest.TestCase):
 
         self.assertIn(("delete_item", ImpedanceView.TOOLS_ITEM), backend.calls)
         self.assertIn(("delete_item", ImpedanceView.TEST_TONE_ITEM), backend.calls)
+        self.assertIn(("delete_item", ImpedanceView.CALIBRATE_ITEM), backend.calls)
 
     def test_graphs_use_magnitude_and_unwrapped_phase(self) -> None:
         app = SpectrumApplication()

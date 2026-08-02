@@ -1,5 +1,8 @@
+from copy import deepcopy
 from threading import Lock
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from audioanalysis import (
     ASignal,
@@ -38,6 +41,8 @@ class SpectrumModule(BaseModule):
         "window": SmoothingWindow.GAUSSIAN.value,
         "recording": None,
         "generator": None,
+        "level_time": np.empty(0, dtype=np.float64),
+        "level_values": np.empty((0, 0), dtype=np.float64),
     }
 
     def __init__(self) -> None:
@@ -49,8 +54,17 @@ class SpectrumModule(BaseModule):
         self._acquisition: SpectrumAcquisition | None = None
         self._runtime_lock = Lock()
         self._pending_snapshot: tuple[Measurement, ASignal, ASignal] | None = None
+        self._pending_level: tuple[Measurement, np.ndarray, np.ndarray] | None = None
         self._pending_completion: (
-            tuple[Measurement, ASignal | None, ASignal | None, str | None] | None
+            tuple[
+                Measurement,
+                ASignal | None,
+                ASignal | None,
+                np.ndarray,
+                np.ndarray,
+                str | None,
+            ]
+            | None
         ) = None
         self._analysis_revision = 0
         self._current_revision = 0
@@ -75,6 +89,7 @@ class SpectrumModule(BaseModule):
             raise RuntimeError("Spectrum module is not initialized")
         self._view.build(
             self.app.main_window.module_gui_host,
+            self.app.main_window.bottom_host,
             measurement.module_state,
         )
         if measurement.module_state["recording"] is not None and not measurement.graphs:
@@ -101,24 +116,37 @@ class SpectrumModule(BaseModule):
                 online_interval=(
                     self.ONLINE_INTERVAL if self.settings.online_welch else None
                 ),
+                on_level=lambda times, levels: self._receive_level(
+                    measurement,
+                    times,
+                    levels,
+                ),
                 on_snapshot=lambda recording, generator: self._receive_snapshot(
                     measurement,
                     recording,
                     generator,
                 ),
-                on_complete=lambda recording, generator, error: self._receive_completion(
-                    measurement,
-                    recording,
-                    generator,
-                    error,
+                on_complete=(
+                    lambda recording, generator, times, levels, error: (
+                        self._receive_completion(
+                            measurement,
+                            recording,
+                            generator,
+                            times,
+                            levels,
+                            error,
+                        )
+                    )
                 ),
             )
             with self._runtime_lock:
                 self._pending_snapshot = None
+                self._pending_level = None
                 self._pending_completion = None
             self._invalidate_analysis()
             self._acquisition = acquisition
             self._stop_requested = False
+            self._clear_level_history(measurement)
             self.app.app_state.measuring = True
             self._set_controls_enabled(False)
             self._set_status("Spectrum measurement started")
@@ -140,7 +168,9 @@ class SpectrumModule(BaseModule):
 
     def update(self) -> None:
         self._process_analysis_response()
-        completion, snapshot = self._take_worker_updates()
+        level, completion, snapshot = self._take_worker_updates()
+        if level is not None:
+            self._process_level(*level)
         if completion is not None:
             self._process_completion(*completion)
         if snapshot is not None and self._finishing_revision is None:
@@ -167,6 +197,7 @@ class SpectrumModule(BaseModule):
         self._invalidate_analysis()
         with self._runtime_lock:
             self._pending_snapshot = None
+            self._pending_level = None
             self._pending_completion = None
         if self._view is not None:
             self._view.destroy()
@@ -213,37 +244,84 @@ class SpectrumModule(BaseModule):
         with self._runtime_lock:
             self._pending_snapshot = (measurement, recording, generator)
 
+    def _receive_level(
+        self,
+        measurement: Measurement,
+        times: np.ndarray,
+        levels: np.ndarray,
+    ) -> None:
+        with self._runtime_lock:
+            self._pending_level = (measurement, times, levels)
+
     def _receive_completion(
         self,
         measurement: Measurement,
         recording: ASignal | None,
         generator: ASignal | None,
+        times: np.ndarray,
+        levels: np.ndarray,
         error: str | None,
     ) -> None:
         with self._runtime_lock:
-            self._pending_completion = (measurement, recording, generator, error)
+            self._pending_completion = (
+                measurement,
+                recording,
+                generator,
+                times,
+                levels,
+                error,
+            )
 
     def _take_worker_updates(
         self,
     ) -> tuple[
-        tuple[Measurement, ASignal | None, ASignal | None, str | None] | None,
+        tuple[Measurement, np.ndarray, np.ndarray] | None,
+        tuple[
+            Measurement,
+            ASignal | None,
+            ASignal | None,
+            np.ndarray,
+            np.ndarray,
+            str | None,
+        ]
+        | None,
         tuple[Measurement, ASignal, ASignal] | None,
     ]:
         with self._runtime_lock:
             completion = self._pending_completion
             snapshot = self._pending_snapshot
+            level = self._pending_level
             self._pending_completion = None
             self._pending_snapshot = None
-        return completion, snapshot
+            self._pending_level = None
+        return level, completion, snapshot
+
+    def _process_level(
+        self,
+        measurement: Measurement,
+        times: np.ndarray,
+        levels: np.ndarray,
+    ) -> None:
+        measurement.module_state["level_time"] = times
+        measurement.module_state["level_values"] = levels
+        if measurement is self._active_measurement() and self._view is not None:
+            self._view.update_levels(
+                times,
+                levels,
+                duration=float(measurement.module_state["duration"]),
+            )
 
     def _process_completion(
         self,
         measurement: Measurement,
         recording: ASignal | None,
         generator: ASignal | None,
+        times: np.ndarray,
+        levels: np.ndarray,
         error: str | None,
     ) -> None:
         self._acquisition = None
+        self._process_level(measurement, times, levels)
         if recording is not None:
             measurement.module_state["recording"] = recording
             measurement.module_state["generator"] = generator
@@ -404,12 +482,10 @@ class SpectrumModule(BaseModule):
     def _validate_audio_settings(self, state: dict[str, Any]) -> None:
         input_rate = self.app.audio_input.sample_rate
         output_rate = self.app.audio_output.sample_rate
-        if input_rate <= 0 or self.app.audio_input.channels <= 0:
+        if input_rate <= 0:
             raise ValueError("Audio input device is unavailable")
-        if output_rate <= 0 or self.app.audio_output.channels <= 0:
+        if output_rate <= 0:
             raise ValueError("Audio output device is unavailable")
-        if state["reference"] == "channel b" and self.app.audio_input.channels < 2:
-            raise ValueError("Channel B reference requires two input channels")
         if state["reference"] == "generator" and input_rate != output_rate:
             raise ValueError(
                 "Generator reference requires equal input and output sample rates"
@@ -432,13 +508,18 @@ class SpectrumModule(BaseModule):
         if self._view is not None:
             self._view.set_enabled(enabled)
 
+    def _clear_level_history(self, measurement: Measurement) -> None:
+        times = np.empty(0, dtype=np.float64)
+        levels = np.empty((0, 0), dtype=np.float64)
+        self._process_level(measurement, times, levels)
+
     def _set_status(self, text: str) -> None:
         self.app.main_window.set_status_text(text)
 
     @classmethod
     def _ensure_state(cls, state: dict[str, Any]) -> None:
         for key, value in cls.DEFAULT_STATE.items():
-            state.setdefault(key, value)
+            state.setdefault(key, deepcopy(value))
 
     @staticmethod
     def _normalize_setting(key: str, value: Any) -> Any:

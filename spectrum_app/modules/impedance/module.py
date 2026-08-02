@@ -113,7 +113,9 @@ class ImpedanceModule(BaseModule):
         self._operation_fallback = "uncalibrated"
         self._revision = 0
         self._levels = (0.0, 0.0)
+        self._shown_levels: tuple[float, float] | None = None
         self._shown_status = ""
+        self._calibration_stage: int | None = None
 
     def initialize(self, app: "SpectrumApplication") -> None:
         super().initialize(app)
@@ -193,6 +195,7 @@ class ImpedanceModule(BaseModule):
         self._capture = None
         self._calculation = None
         self._operation = None
+        self._calibration_stage = None
         with self._lock:
             self._pending_level = None
             self._pending_capture = None
@@ -214,7 +217,13 @@ class ImpedanceModule(BaseModule):
         if self._is_busy() or self._view is None:
             return
         stage = 2 if self.measurement.module_state["workflow"] == "waiting_reference" else 1
-        self._view.show_calibration_stage(stage)
+        self._show_calibration_stage(stage)
+
+    def request_calibration(self, sender=None, app_data=None, user_data=None) -> None:
+        """Open a fresh calibration workflow from the Tools menu."""
+        if self._is_busy() or self._view is None:
+            return
+        self._show_calibration_stage(1)
 
     def continue_calibration(self, sender=None, app_data=None, user_data=None) -> None:
         if self._is_busy():
@@ -222,7 +231,7 @@ class ImpedanceModule(BaseModule):
         state = self.measurement.module_state
         try:
             config = self._build_config()
-            if state["workflow"] == "waiting_reference":
+            if self._calibration_stage == 2:
                 if state["calibration_signature"] != self._capture_signature(config):
                     self._clear_calibration(state)
                     raise ValueError("Measurement settings changed; restart calibration")
@@ -235,11 +244,13 @@ class ImpedanceModule(BaseModule):
                 operation = Operation.CHANNEL_CALIBRATION
             if self._view is not None:
                 self._view.hide_calibration()
+            self._calibration_stage = None
             self._start_capture(operation, signal, config)
         except Exception as error:
             self._fail(str(error), fallback="uncalibrated")
 
     def cancel_calibration(self, sender=None, app_data=None, user_data=None) -> None:
+        self._calibration_stage = None
         if self._view is not None:
             self._view.hide_calibration()
         if self._operation in (
@@ -477,8 +488,7 @@ class ImpedanceModule(BaseModule):
             state["channel_correction"] = result.correction
             state["workflow"] = "waiting_reference"
             self._finish_operation("Connect Rref and Rcal for calibration stage 2")
-            if self._view is not None:
-                self._view.show_calibration_stage(2)
+            self._show_calibration_stage(2)
         elif operation == Operation.REFERENCE_CALIBRATION:
             assert isinstance(result, ReferenceCalibration)
             state["reference_resistor_estimated"] = result.reference_resistor
@@ -685,9 +695,9 @@ class ImpedanceModule(BaseModule):
         )
 
     def _validate_audio(self, config: ImpedanceConfig) -> None:
-        if self.app.audio_input.channels < 2:
-            raise ValueError("Impedance measurement requires two input channels")
-        if self.app.audio_output.channels < 1:
+        if self.app.audio_input.sample_rate <= 0:
+            raise ValueError("Audio input device is unavailable")
+        if self.app.audio_output.sample_rate <= 0:
             raise ValueError("Audio output device is unavailable")
         if self.app.audio_input.sample_rate != self.app.audio_output.sample_rate:
             raise ValueError("Input and output sample rates must be equal")
@@ -724,13 +734,25 @@ class ImpedanceModule(BaseModule):
     def _sync_view(self, *, force: bool = False) -> None:
         if self._view is None:
             return
+        self._view.update()
         status = str(self.measurement.module_state["status"])
-        if force or status != self._shown_status or self._levels != (0.0, 0.0):
+        if (
+            force
+            or status != self._shown_status
+            or self._levels != self._shown_levels
+        ):
             self._view.update_status(
                 status,
                 self._levels,
             )
             self._shown_status = status
+            self._shown_levels = self._levels
+
+    def _show_calibration_stage(self, stage: int) -> None:
+        if self._view is None:
+            return
+        self._calibration_stage = stage
+        self._view.show_calibration_stage(stage)
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         if self._view is not None:

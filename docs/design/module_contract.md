@@ -252,24 +252,36 @@ app.audio_input.open() -> bool
 app.audio_input.read(samples) -> ndarray
 app.audio_input.close() -> bool
 app.audio_input.sample_rate
-app.audio_input.channels
 app.audio_input.block_size
 
 app.audio_output.open() -> bool
 app.audio_output.write(data)
 app.audio_output.close() -> bool
 app.audio_output.sample_rate
-app.audio_output.channels
 app.audio_output.block_size
 ```
 
 A module must never import `sounddevice`, create a PortAudio stream, choose a
 device, refresh devices, or pass SoundDevice-specific stream parameters.
 
-`sample_rate` and `channels` are read-only defaults of the selected device and
-are available before `open()`. `block_size` is the user's recommended transfer
-size. It is not a requirement that all module reads and writes use exactly that
-size.
+`sample_rate` is the read-only default of the selected device and is available
+before `open()`. `block_size` is the user's recommended transfer size. It is
+not a requirement that all module reads and writes use exactly that size.
+
+The application exposes logical audio rather than the physical channel layout:
+
+- `AudioInput.read()` always returns a two-dimensional array shaped
+  `(samples, 2)`. Its columns are logical input channels A and B. Application
+  settings route one physical input to each logical channel. The same physical
+  input may feed both A and B; an unassigned logical input contains zeros.
+- `AudioOutput.write()` accepts only a one-dimensional mono array shaped
+  `(samples,)`. All module generators are mono. Application settings fan that
+  signal out to any number of physical outputs; enabled outputs receive the
+  same samples and disabled outputs remain silent.
+
+The core validates these shapes at the audio boundary. Passing a two-dimensional
+or otherwise invalid array to `AudioOutput.write()` is a module error and closes
+the output stream. Modules must never perform physical channel routing.
 
 ### Opening streams
 
@@ -278,7 +290,7 @@ Opening a stream may wait for an in-progress device refresh. This is why
 
 When both directions are needed:
 
-1. validate advertised input/output sample rates and channel counts;
+1. validate advertised input/output sample rates;
 2. open the first stream;
 3. open the second stream;
 4. if either operation fails, close both directions in `finally`;
@@ -299,7 +311,7 @@ For duplex measurements, use independent input and output execution paths:
 ```text
 acquisition coordinator
 |- input loop:  read -> append recording -> publish level
-`- output loop: slice generator -> adapt channels -> write
+`- output loop: slice mono generator -> write
 ```
 
 One of these loops may be the coordinator thread and the other a child thread.
@@ -307,9 +319,9 @@ Both must share a cancellation event and report their first failure to the
 coordinator. The coordinator owns final closure and emits exactly one
 completion message.
 
-Output data must be shaped for the selected output channel count. Input workers
-should retain only the channels required by the measurement, but must preserve
-the sample rate in the resulting `ASignal`.
+Output data must remain one-dimensional and mono. Input workers receive exactly
+two logical channels and should preserve both unless the measurement explicitly
+needs only one. Recorded signals must preserve the sample rate in `ASignal`.
 
 ### Audio-worker cleanup pattern
 

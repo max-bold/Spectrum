@@ -52,8 +52,6 @@ class ImpedanceCapture(Thread):
                 raise RuntimeError("Cannot open audio input")
             if not self.audio_output.open():
                 raise RuntimeError("Cannot open audio output")
-            if self.audio_input.channels < 2:
-                raise RuntimeError("Impedance measurement requires two input channels")
             input_rate = self.audio_input.sample_rate
             if input_rate != self.audio_output.sample_rate:
                 raise RuntimeError("Input and output sample rates must be equal")
@@ -124,11 +122,7 @@ class ImpedanceCapture(Thread):
                         return
                     position = 0
                 end = min(position + self.audio_output.block_size, len(data))
-                block = np.repeat(
-                    data[position:end],
-                    self.audio_output.channels,
-                    axis=1,
-                )
+                block = data[position:end, 0]
                 self.audio_output.write(block)
                 position = end
         except Exception as error:
