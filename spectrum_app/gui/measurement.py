@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 import dearpygui.dearpygui as dpg
 
 from spectrum_app.core.model import Measurement
+from spectrum_app.modules.base import BaseModule
 
 if TYPE_CHECKING:
     from spectrum_app.application import SpectrumApplication
@@ -17,19 +18,27 @@ class MeasurementPanel:
         self.green_button_theme = "app::measurement::green_button_theme"
         self.red_button_theme = "app::measurement::red_button_theme"
         self._shown_measurement_id: str | None = None
+        self._shown_module_id: str | None = None
         self._shown_measuring: bool | None = None
+        self._shown_button_label: str | None = None
+        self._module_ids_by_name = {
+            module.name: module.id for module in self.app.module_manager.modules
+        }
+        self._modules_ready = False
+        self._active_module: BaseModule | None = None
+        self._active_module_measurement_id: str | None = None
 
     def build(self) -> None:
         self._build_themes()
         dpg.add_button(
-            label="OFF",
+            label="MEASURE",
             tag=self.run_button,
             width=-1,
             height=50,
             callback=self._toggle_measurement,
         )
         dpg.add_combo(
-            [self.app.DEFAULT_MODULE_ID],
+            list(self._module_ids_by_name),
             tag=self.module_combo,
             width=-1,
             callback=self._set_module,
@@ -42,20 +51,53 @@ class MeasurementPanel:
             pass
         self.update(force=True)
 
+    def modules_initialized(self) -> None:
+        self._modules_ready = True
+        self.update(force=True)
+
+    def shutdown(self) -> None:
+        self._deactivate_module()
+        self._modules_ready = False
+
+    def deactivate(self) -> None:
+        self._deactivate_module()
+
     def update(self, force: bool = False) -> None:
         measurement = self._active_measurement()
+        if self._modules_ready:
+            self._sync_active_module(measurement)
+            if self._active_module is not None:
+                self._active_module.update()
         measurement_id = measurement.id if measurement else None
         measuring = self.app.app_state.measuring
 
-        if force or measurement_id != self._shown_measurement_id:
+        module_id = measurement.module_id if measurement else None
+        if (
+            force
+            or measurement_id != self._shown_measurement_id
+            or module_id != self._shown_module_id
+        ):
             dpg.set_value(
                 self.module_combo,
-                measurement.module_id if measurement else "",
+                self._module_name(module_id) if module_id else "",
             )
             self._shown_measurement_id = measurement_id
+            self._shown_module_id = module_id
+
+        button_label = (
+            "STOP"
+            if measuring
+            else (
+                self._active_module.measurement_button_label
+                if self._active_module is not None
+                else "MEASURE"
+            )
+        )
+        if force or button_label != self._shown_button_label:
+            dpg.set_item_label(self.run_button, button_label)
+            self._shown_button_label = button_label
 
         if force or measuring != self._shown_measuring:
-            dpg.set_item_label(self.run_button, "ON" if measuring else "OFF")
             dpg.bind_item_theme(
                 self.run_button,
                 self.red_button_theme if measuring else self.green_button_theme,
@@ -111,13 +153,67 @@ class MeasurementPanel:
         )
 
     def _toggle_measurement(self, sender=None, app_data=None, user_data=None) -> None:
-        self.app.app_state.measuring = not self.app.app_state.measuring
+        if self._active_module is None:
+            return
+        if self.app.app_state.measuring:
+            self._active_module.stop_measurement()
+        else:
+            self._active_module.start_measurement()
         self.update()
 
-    def _set_module(self, sender: int | str, module_id: str, user_data=None) -> None:
+    def _set_module(self, sender: int | str, module_name: str, user_data=None) -> None:
         measurement = self._active_measurement()
         if measurement is not None:
+            module_id = self._module_ids_by_name[module_name]
+            if measurement.module_id == module_id:
+                return
+            removed_graph_ids = {graph.id for graph in measurement.graphs}
+            self.app.app_state.visible_graph_ids = [
+                graph_id
+                for graph_id in self.app.app_state.visible_graph_ids
+                if graph_id not in removed_graph_ids
+            ]
             measurement.module_id = module_id
+            measurement.module_state.clear()
+            measurement.graphs.clear()
+            self.app.app_state.graph_data_changed = True
+            self.update()
+
+    def _module_name(self, module_id: str) -> str:
+        try:
+            return self.app.module_manager.module(module_id).name
+        except ValueError:
+            return module_id
+
+    def _sync_active_module(self, measurement: Measurement | None) -> None:
+        module = (
+            self.app.module_manager.module(measurement.module_id)
+            if measurement is not None
+            else None
+        )
+        if (
+            module is self._active_module
+            and self._active_module_measurement_id
+            == (measurement.id if measurement is not None else None)
+        ):
+            return
+
+        self._deactivate_module()
+        if module is not None and measurement is not None:
+            module.activate(measurement)
+            self._active_module = module
+            self._active_module_measurement_id = measurement.id
+
+    def _deactivate_module(self) -> None:
+        if self._active_module is None:
+            return
+        try:
+            if self.app.app_state.measuring:
+                self._active_module.stop_measurement()
+            self._active_module.deactivate()
+        finally:
+            self._active_module = None
+            self._active_module_measurement_id = None
 
     def _active_measurement(self) -> Measurement | None:
         active_id = self.app.app_state.active_measurement_id

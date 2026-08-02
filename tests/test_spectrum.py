@@ -1,0 +1,97 @@
+import unittest
+from typing import Any, cast
+
+import numpy as np
+from scipy.signal import periodogram, welch
+
+from audioanalysis import (
+    ASignal,
+    AnalysisMethod,
+    FrequencyBand,
+    SpectrumConfig,
+    analyze_spectrum,
+    calculate_power_spectrum,
+    log_chirp,
+    pink_noise,
+)
+
+
+class SpectrumAnalysisTests(unittest.TestCase):
+    def test_periodogram_matches_scipy_for_every_channel(self) -> None:
+        rng = np.random.default_rng(1234)
+        signal = ASignal(rng.normal(size=(2048, 2)), 48_000)
+
+        frequency, values = calculate_power_spectrum(signal)
+        expected_frequency, expected_values = periodogram(
+            signal.as_array(np.float64),
+            signal.sample_rate,
+            axis=0,
+        )
+
+        np.testing.assert_allclose(frequency, expected_frequency)
+        np.testing.assert_allclose(values, expected_values)
+
+    def test_welch_matches_scipy_and_limits_window_to_recording(self) -> None:
+        rng = np.random.default_rng(5678)
+        signal = ASignal(rng.normal(size=(1024, 2)), 44_100)
+
+        frequency, values = calculate_power_spectrum(
+            signal,
+            method=AnalysisMethod.WELCH,
+            welch_samples=8192,
+        )
+        expected_frequency, expected_values = welch(
+            signal.as_array(np.float64),
+            signal.sample_rate,
+            window="hann",
+            nperseg=signal.sample_count,
+            axis=0,
+        )
+
+        np.testing.assert_allclose(frequency, expected_frequency)
+        np.testing.assert_allclose(values, expected_values)
+
+    def test_analyzer_uses_sample_rate_from_asignal(self) -> None:
+        sample_rate = 48_000
+        time = np.arange(sample_rate, dtype=np.float64) / sample_rate
+        signal = ASignal(np.sin(2 * np.pi * 1000.0 * time), sample_rate)
+
+        result = analyze_spectrum(
+            signal,
+            SpectrumConfig(
+                band=FrequencyBand(100.0, 10_000.0),
+                points=512,
+            ),
+        )
+
+        self.assertEqual(result.frequency.shape, (512,))
+        self.assertEqual(result.values.shape, (512,))
+        peak_frequency = result.frequency[np.nanargmax(result.values)]
+        self.assertAlmostEqual(peak_frequency, 1000.0, delta=100.0)
+
+    def test_analyzer_rejects_bare_ndarray(self) -> None:
+        with self.assertRaisesRegex(TypeError, "ASignal"):
+            analyze_spectrum(
+                cast(Any, np.zeros((1024, 1))),
+                SpectrumConfig(),
+            )
+
+    def test_generators_return_asignal(self) -> None:
+        chirp = log_chirp(2048, 48_000, (20.0, 20_000.0), pad=0, fade=0)
+        noise = pink_noise(
+            2048,
+            48_000,
+            (20.0, 20_000.0),
+            rng=np.random.default_rng(42),
+            pad=0,
+            fade=0,
+        )
+
+        self.assertIsInstance(chirp, ASignal)
+        self.assertIsInstance(noise, ASignal)
+        self.assertEqual(chirp.sample_rate, 48_000)
+        self.assertEqual(noise.sample_rate, 48_000)
+
+
+if __name__ == "__main__":
+    unittest.main()

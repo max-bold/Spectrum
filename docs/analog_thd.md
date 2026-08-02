@@ -10,8 +10,10 @@ distortion plus noise. The difference is that the tone is not stationary. A
 logarithmic sweep is used, and the fundamental rejection band is moved through
 the STFT plane frame by frame.
 
-The implementation described here is the current experiment in
-[`sandbox/thd4.py`](../sandbox/thd4.py).
+The original experiment is in [`sandbox/thd4.py`](../sandbox/thd4.py). Its
+reusable, plotting-independent implementation now lives in
+[`audioanalysis/thd.py`](../audioanalysis/thd.py) and processes STFT frames
+incrementally to keep memory use bounded.
 
 ## Test Signal Used for the Figures
 

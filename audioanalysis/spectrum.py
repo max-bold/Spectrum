@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from scipy.signal import periodogram, welch
 
 from .smoothing import SmoothingWindow, log_smooth
-from .types import FrequencyBand
+from .types import ASignal, FrequencyBand
 
 
 class AnalysisMethod(str, Enum):
@@ -23,7 +23,6 @@ class ReferenceMode(str, Enum):
 
 @dataclass(frozen=True)
 class SpectrumConfig:
-    sample_rate: int
     method: AnalysisMethod = AnalysisMethod.PERIODOGRAM
     reference: ReferenceMode = ReferenceMode.NONE
     band: FrequencyBand = FrequencyBand()
@@ -41,18 +40,18 @@ class SpectrumResult:
 
 
 def analyze_spectrum(
-    record: NDArray[np.floating],
+    signal: ASignal,
     config: SpectrumConfig,
 ) -> SpectrumResult:
-    """Analyze ``(samples, channels)`` audio and return smoothed log-power data."""
-    if config.sample_rate <= 0:
-        raise ValueError("Sample rate must be positive")
-    config.band.validate(nyquist=config.sample_rate / 2)
-    data = np.asarray(record)
-    if data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0:
-        raise ValueError("Record must have shape (samples, channels)")
+    """Analyze an audio signal and return smoothed logarithmic power data."""
+    _validate_signal(signal)
+    config.band.validate(nyquist=signal.sample_rate / 2)
 
-    frequency, spectrum = _raw_power_spectrum(data, config)
+    frequency, spectrum = calculate_power_spectrum(
+        signal,
+        method=config.method,
+        welch_samples=config.welch_samples,
+    )
     values = _apply_reference(spectrum, config.reference)
     if config.pink_weighting:
         values = values * frequency
@@ -65,6 +64,34 @@ def analyze_spectrum(
         points=config.points,
     )
     return SpectrumResult(output_frequency, np.asarray(output_values, dtype=np.float64))
+
+
+def calculate_power_spectrum(
+    signal: ASignal,
+    *,
+    method: AnalysisMethod = AnalysisMethod.PERIODOGRAM,
+    welch_samples: int = 8192,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Calculate a periodogram or Welch PSD for every signal channel."""
+    _validate_signal(signal)
+    data = signal.as_array(np.float64)
+    if method == AnalysisMethod.PERIODOGRAM:
+        frequency, values = periodogram(data, signal.sample_rate, axis=0)
+    elif method == AnalysisMethod.WELCH:
+        samples = min(max(1, int(welch_samples)), signal.sample_count)
+        frequency, values = welch(
+            data,
+            signal.sample_rate,
+            window="hann",
+            nperseg=samples,
+            axis=0,
+        )
+    else:
+        raise ValueError(f"Unknown analysis method: {method}")
+    return (
+        np.asarray(frequency, dtype=np.float64),
+        np.asarray(values, dtype=np.float64),
+    )
 
 
 def magnitude_db(
@@ -90,16 +117,11 @@ def phase_degrees(values: NDArray[np.number]) -> NDArray[np.float64]:
     return np.rad2deg(np.unwrap(np.angle(values)))
 
 
-def _raw_power_spectrum(
-    data: NDArray[np.floating],
-    config: SpectrumConfig,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    if config.method == AnalysisMethod.PERIODOGRAM:
-        return periodogram(data, config.sample_rate, axis=0)
-    if config.method == AnalysisMethod.WELCH:
-        samples = min(max(1, int(config.welch_samples)), len(data))
-        return welch(data, config.sample_rate, window="hann", nperseg=samples, axis=0)
-    raise ValueError(f"Unknown analysis method: {config.method}")
+def _validate_signal(signal: ASignal) -> None:
+    if not isinstance(signal, ASignal):
+        raise TypeError("Spectrum analysis requires ASignal")
+    if signal.sample_count == 0:
+        raise ValueError("Signal must contain samples")
 
 
 def _apply_reference(

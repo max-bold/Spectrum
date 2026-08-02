@@ -18,11 +18,18 @@ class AppSettingsTests(unittest.TestCase):
             settings.impedance_scale = "log"
             settings.thd_scale = "log"
             settings.phase_unit = "deg/dec"
+            settings.input_device = "WASAPI\x1fInput"
+            settings.output_device = "WASAPI\x1fOutput"
+            settings.input_block_size = 2048
+            settings.output_block_size = 4096
+            settings.set_module_setting("spectrum", "generator_mode", "pink noise")
+            settings.set_module_setting("spectrum", "welch_samples", 4096)
+            settings.set_module_setting("spectrum", "online_welch", False)
 
             data = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(data, settings.to_dict())
             self.assertFalse(path.with_suffix(".json.tmp").exists())
-            self.assertEqual(len(changes), 4)
+            self.assertEqual(len(changes), 11)
 
             loaded = AppSettings()
             self.assertTrue(loaded.load(path))
@@ -30,6 +37,19 @@ class AppSettingsTests(unittest.TestCase):
             self.assertEqual(loaded.impedance_scale, "log")
             self.assertEqual(loaded.thd_scale, "log")
             self.assertEqual(loaded.phase_unit, "deg/dec")
+            self.assertEqual(loaded.input_device, "WASAPI\x1fInput")
+            self.assertEqual(loaded.output_device, "WASAPI\x1fOutput")
+            self.assertEqual(loaded.input_block_size, 2048)
+            self.assertEqual(loaded.output_block_size, 4096)
+            self.assertEqual(
+                loaded.module_setting("spectrum", "generator_mode"),
+                "pink noise",
+            )
+            self.assertEqual(
+                loaded.module_setting("spectrum", "welch_samples"),
+                4096,
+            )
+            self.assertFalse(loaded.module_setting("spectrum", "online_welch"))
 
     def test_invalid_file_falls_back_to_defaults(self) -> None:
         with TemporaryDirectory() as directory:
@@ -52,6 +72,12 @@ class AppSettingsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "positive and increasing"):
             settings.frequency_range = (1000.0, 20.0)
+
+    def test_block_sizes_are_validated(self) -> None:
+        settings = AppSettings()
+
+        with self.assertRaisesRegex(ValueError, "positive"):
+            settings.input_block_size = 0
 
 
 if __name__ == "__main__":

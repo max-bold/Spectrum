@@ -16,9 +16,12 @@ class AppStatePanel:
         self.add_measurement_button = "app::add_measurement"
         self.texture_registry = "app::app_state::texture_registry"
         self.delete_icon = "app::app_state::delete_icon"
+        self._built = False
+        self._shown_measurement_ids: list[str] = []
 
     def build(self) -> None:
         self._load_icons()
+        self._shown_measurement_ids.clear()
 
         with dpg.table(  # pyright: ignore[reportGeneralTypeIssues]
             tag=self.measurements_table,
@@ -38,6 +41,17 @@ class AppStatePanel:
             width=-1,
             callback=self._create_measurement,
         )
+        self._built = True
+
+    def rebuild(self) -> None:
+        if not self._built:
+            return
+        for measurement_id in self._shown_measurement_ids:
+            dpg.delete_item(self._row_tag(measurement_id))
+        self._shown_measurement_ids.clear()
+        for measurement in self.app.app_state.measurements:
+            self._add_measurement_row(measurement)
+        self._sync_active_measurement_checkboxes()
 
     def _add_measurement_row(self, measurement: Measurement) -> None:
         with dpg.table_row(  # pyright: ignore[reportGeneralTypeIssues]
@@ -72,6 +86,7 @@ class AppStatePanel:
                 callback=self._delete_measurement,
                 user_data=measurement.id,
             )
+        self._shown_measurement_ids.append(measurement.id)
 
     def _load_icons(self) -> None:
         if dpg.does_item_exist(self.delete_icon):
@@ -106,6 +121,7 @@ class AppStatePanel:
     ) -> None:
         self.app.delete_measurement(measurement_id)
         dpg.delete_item(self._row_tag(measurement_id))
+        self._shown_measurement_ids.remove(measurement_id)
         self._sync_active_measurement_checkboxes()
 
     def _set_measurement_visible(

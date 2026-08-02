@@ -30,6 +30,15 @@ v0.3
 - Implement multi-record mode with averaging
 - Implement THD calculation and display using Farina's method
 
+v0.3.1
+- Add schema versions and migrations for module state
+- Isolate module discovery and initialization failures from the rest of the application
+- Track and remove module-owned menu items and callbacks during shutdown
+- Implement a Module Manager for loading external modules
+- Expand the plot workspace to support multiple plot panels
+- Replace the shared frame-callback list with a typed signal/callback API
+- Add project-format versioning and migrations to reduce coupling to pickled classes
+
 v0.4
 - Implement real-time analyzer mode
 - Implement impedance measurement mode

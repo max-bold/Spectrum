@@ -38,7 +38,6 @@ class Measurement:
     module_id: str
     name: str
     id: str = field(default_factory=_new_id)
-    settings: dict[str, Any] = field(default_factory=dict)
     module_state: dict[str, Any] = field(default_factory=dict)
     graphs: list[GraphData] = field(default_factory=list)
 

@@ -7,6 +7,8 @@ from spectrum_app import SpectrumApplication
 from spectrum_app.core.dpg import DearPyGuiRuntime
 from spectrum_app.core.model import AxisSpec, GraphData
 from spectrum_app.gui.main_window import MainWindow
+from spectrum_app.modules.spectrum import SpectrumModule
+from spectrum_app.modules.spectrum.settings import SpectrumSettingsWindow
 
 
 class FakeContainer:
@@ -77,6 +79,9 @@ class FakeDpgBackend:
     def group(self, **kwargs) -> FakeContainer:
         return self._container("group", **kwargs)
 
+    def collapsing_header(self, **kwargs) -> FakeContainer:
+        return self._container("collapsing_header", **kwargs)
+
     def table(self, **kwargs) -> FakeContainer:
         return self._container("table", **kwargs)
 
@@ -105,6 +110,14 @@ class FakeDpgBackend:
     def add_menu_item(self, **kwargs) -> str:
         self.calls.append(("add_menu_item", kwargs))
         return kwargs.get("tag", "menu_item")
+
+    def add_file_dialog(self, **kwargs) -> str:
+        self.calls.append(("add_file_dialog", kwargs))
+        return kwargs.get("tag", "file_dialog")
+
+    def add_file_extension(self, extension: str, **kwargs) -> str:
+        self.calls.append(("add_file_extension", extension, kwargs))
+        return "file_extension"
 
     def add_plot_legend(self, **kwargs) -> str:
         self.calls.append(("add_plot_legend", kwargs))
@@ -143,6 +156,10 @@ class FakeDpgBackend:
     def add_input_intx(self, **kwargs) -> str:
         self.calls.append(("add_input_intx", kwargs))
         return kwargs.get("tag", "input_intx")
+
+    def add_input_int(self, **kwargs) -> str:
+        self.calls.append(("add_input_int", kwargs))
+        return kwargs.get("tag", "input_int")
 
     def add_radio_button(self, items: tuple[str, ...], **kwargs) -> str:
         self.calls.append(("add_radio_button", items, kwargs))
@@ -212,6 +229,12 @@ class FakeDpgBackend:
     def configure_item(self, tag: str, **kwargs) -> None:
         self.calls.append(("configure_item", tag, kwargs))
 
+    def show_item(self, tag: str) -> None:
+        self.calls.append(("show_item", tag))
+
+    def hide_item(self, tag: str) -> None:
+        self.calls.append(("hide_item", tag))
+
     def set_axis_limits(self, tag: str, low: float, high: float) -> None:
         self.calls.append(("set_axis_limits", tag, low, high))
 
@@ -256,11 +279,16 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
         )
 
         with (
+            patch.object(app._audio_service, "start"),
+            patch.object(app._audio_service, "shutdown"),
             patch("spectrum_app.gui.main_window.dpg", backend),
             patch("spectrum_app.gui.app_state.dpg", backend),
             patch("spectrum_app.gui.measurement.dpg", backend),
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
+            patch("spectrum_app.gui.project.dpg", backend),
+            patch("spectrum_app.modules.spectrum.view.dpg", backend),
+            patch("spectrum_app.modules.spectrum.settings.dpg", backend),
         ):
             app.run()
 
@@ -276,6 +304,17 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(call_names[-1], "destroy_context")
         self.assertFalse(app.running)
+        spectrum_settings_item = next(
+            call
+            for call in backend.calls
+            if call[0] == "add_menu_item"
+            and call[1].get("tag") == SpectrumSettingsWindow.MENU_ITEM
+        )
+        self.assertEqual(spectrum_settings_item[1]["label"], "Spectrum")
+        self.assertEqual(
+            spectrum_settings_item[1]["parent"],
+            app.main_window.settings_menu,
+        )
 
     def test_main_window_exposes_module_hosts_and_status(self) -> None:
         backend = FakeDpgBackend()
@@ -289,6 +328,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.measurement.dpg", backend),
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
+            patch("spectrum_app.gui.project.dpg", backend),
         ):
             app.dpg.create_context()
             app.main_window.build()
@@ -300,6 +340,8 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
                 and call[1].get("parent") == app.main_window.settings_menu
             )
             settings_item[1]["callback"]()
+
+        self.assertEqual(settings_item[1]["label"], "Application")
 
         menu_calls = [call[1] for call in backend.calls if call[0] == "add_menu"]
         self.assertEqual(
@@ -355,6 +397,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.measurement.dpg", backend),
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
+            patch("spectrum_app.gui.project.dpg", backend),
         ):
             window.build()
             add_button_call = next(
@@ -410,29 +453,48 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.measurement.dpg", backend),
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
+            patch("spectrum_app.gui.project.dpg", backend),
+            patch("spectrum_app.modules.spectrum.view.dpg", backend),
+            patch("spectrum_app.modules.spectrum.settings.dpg", backend),
         ):
             window.build()
+            spectrum_module = app.module_manager.module("spectrum")
+            spectrum_module.initialize(app)
+            window.measurement_panel.modules_initialized()
             run_button_call = next(
                 call
                 for call in backend.calls
                 if call[0] == "add_button"
                 and call[1].get("tag") == window.measurement_panel.run_button
             )
-            run_button_call[1]["callback"]()
+            with patch.object(
+                SpectrumModule,
+                "start_measurement",
+                autospec=True,
+                side_effect=lambda module: setattr(
+                    module.app.app_state,
+                    "measuring",
+                    True,
+                ),
+            ) as start_measurement:
+                run_button_call[1]["callback"]()
+                start_measurement.assert_called_once_with(spectrum_module)
 
-        self.assertTrue(app.app_state.measuring)
-        self.assertIn(
-            ("set_item_label", window.measurement_panel.run_button, "ON"),
-            backend.calls,
-        )
-        self.assertIn(
-            (
-                "bind_item_theme",
-                window.measurement_panel.run_button,
-                window.measurement_panel.red_button_theme,
-            ),
-            backend.calls,
-        )
+            self.assertTrue(app.app_state.measuring)
+            self.assertIn(
+                ("set_item_label", window.measurement_panel.run_button, "STOP"),
+                backend.calls,
+            )
+            self.assertIn(
+                (
+                    "bind_item_theme",
+                    window.measurement_panel.run_button,
+                    window.measurement_panel.red_button_theme,
+                ),
+                backend.calls,
+            )
+            window.measurement_panel.shutdown()
+            spectrum_module.shutdown()
 
     def test_plot_redraws_three_supported_graph_types(self) -> None:
         backend = FakeDpgBackend()
@@ -477,6 +539,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.measurement.dpg", backend),
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
+            patch("spectrum_app.gui.project.dpg", backend),
         ):
             window.build()
             window.plot.update()
@@ -581,6 +644,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.gui.measurement.dpg", backend),
             patch("spectrum_app.gui.plot.dpg", backend),
             patch("spectrum_app.gui.settings.dpg", backend),
+            patch("spectrum_app.gui.project.dpg", backend),
         ):
             window.build()
             window.plot.update()

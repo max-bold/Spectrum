@@ -5,6 +5,7 @@ import dearpygui.dearpygui as dpg
 from spectrum_app.gui.app_state import AppStatePanel
 from spectrum_app.gui.measurement import MeasurementPanel
 from spectrum_app.gui.plot import Plot
+from spectrum_app.gui.project import ProjectDialogs
 from spectrum_app.gui.settings import SettingsWindow
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ class MainWindow:
         self.tools_menu = "app::tools_menu"
         self.settings_menu = "app::settings_menu"
         self.settings_window = SettingsWindow(app)
+        self.project_dialogs = ProjectDialogs(app)
         self.plot = Plot(app)
         self.plot_host = self.plot.tag
         self.bottom_host = "app::bottom_host"
@@ -34,6 +36,7 @@ class MainWindow:
         self.appstate_host = "app::appstate_host"
         self.app_state_panel = AppStatePanel(app)
         self.status = "app::status_bar"
+        self._built = False
 
     @property
     def tag(self) -> str:
@@ -48,7 +51,7 @@ class MainWindow:
                 dpg.add_menu(label="Tools", tag=self.tools_menu)
                 dpg.add_menu(label="Settings", tag=self.settings_menu)
                 dpg.add_menu_item(
-                    label="Application settings...",
+                    label="Application",
                     parent=self.settings_menu,
                     callback=self.settings_window.show,
                 )
@@ -77,11 +80,23 @@ class MainWindow:
                             self.app_state_panel.build()
                     dpg.add_text("",tag=self.status)
 
+        self.project_dialogs.build(self.file_menu)
         self.settings_window.build()
+        self._built = True
 
     def update(self) -> None:
         self.plot.update()
         self.measurement_panel.update()
+        self.settings_window.update()
+        audio_error = self.app._audio_service.consume_error()
+        if audio_error is not None:
+            self.set_status_text(f"Audio error: {audio_error}")
 
     def set_status_text(self, text: str) -> None:
         dpg.set_value(self.status, text)
+
+    def project_loaded(self) -> None:
+        if not self._built:
+            return
+        self.app_state_panel.rebuild()
+        self.measurement_panel.update(force=True)

@@ -19,6 +19,10 @@ module receives the complete `SpectrumApplication` instance. The application
 remains a composition of focused services rather than implementing every
 operation itself.
 
+The normative lifecycle, state ownership, audio, worker-thread, and
+synchronization rules are defined in the
+[measurement module contract](module_contract.md).
+
 ## Responsibilities
 
 The application core owns:
@@ -26,7 +30,7 @@ The application core owns:
 - the Dear PyGui lifecycle and main window;
 - audio-device discovery and abstract audio sessions;
 - project loading and saving;
-- module discovery and lifecycle;
+- module discovery and application-level lifecycle;
 - shared settings, background execution, and UI-thread dispatch;
 - the plot workspace and composition of visible layers.
 
@@ -37,6 +41,15 @@ A measurement module owns:
 - module-specific state and calibration logic;
 - serialization and migration of its data;
 - renderers that expose its results to the plot workspace.
+
+All persistent per-measurement data owned by a module lives in the single
+`Measurement.module_state` dictionary. The module defines and interprets its
+keys; the application core does not split that data into additional settings,
+recording, calibration, or result-state objects. This dictionary may contain
+module control values, reusable raw data, and calibration data. Calculated plot
+series remain in `Measurement.graphs` because they are consumed by the shared
+plot workspace. Module-wide preferences live in the module's namespace inside
+`AppSettings` and are not loaded from a project.
 
 Modules must not depend directly on other measurement modules.
 
@@ -53,17 +66,30 @@ different module types. DPG item identifiers belong to disposable view objects,
 not to persistent measurement state.
 
 Module construction is phased to avoid accessing a partially initialized
-application:
+application. The manager owns one module instance per measurement type:
 
 ```text
-module.__init__(application)
-module.on_load()
+module.__init__()
 application builds the UI
-module.on_ui_ready()
-module.on_activate()
+module.initialize(application)
+module.activate(measurement)
 ...
+module.deactivate()
 module.shutdown()
 ```
+
+The module object is not a `Thread`. Each measurement run may create its own
+worker, while `module.update()` transfers results to application state from the
+main thread.
+
+The module owns the complete runtime of its measurement. It sets
+`app.app_state.measuring` while work is active and clears it after normal
+completion, user interruption, or failure. It also reports its own errors and
+closes every audio stream it opened. `ModuleManager` only discovers modules and
+provides lookup by ID. The application initializes and shuts down every module;
+the measurement panel activates the selected module and delegates
+start/stop/update calls. Neither component supervises the module's worker or
+repairs its runtime state.
 
 ## Audio
 
@@ -92,6 +118,6 @@ UI thread remains open and must not become a general untyped event queue.
 
 ## Project storage
 
-The project continues to store multiple measurements and their selection. The
-exact next-version schema, ownership of calibration data, and persistence of the
-plot workspace remain open design questions.
+The project stores the complete `AppState`, including multiple measurements,
+their module state, calculated graphs, visibility, and current selection.
+`AppSettings` remains separate and is not changed when a project is opened.

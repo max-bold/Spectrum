@@ -1,6 +1,7 @@
 import unittest
 
 from spectrum_app import SpectrumApplication
+from spectrum_app.core.audio import AudioInput, AudioOutput, AudioService
 from spectrum_app.core.model import AppState
 from spectrum_app.core.settings import AppSettings
 
@@ -29,6 +30,9 @@ class SpectrumApplicationTests(unittest.TestCase):
 
         self.assertIsInstance(app.app_state, AppState)
         self.assertIsInstance(app.settings, AppSettings)
+        self.assertIsInstance(app._audio_service, AudioService)
+        self.assertIsInstance(app.audio_input, AudioInput)
+        self.assertIsInstance(app.audio_output, AudioOutput)
 
     def test_settings_changes_request_plot_redraw(self) -> None:
         app = SpectrumApplication()
