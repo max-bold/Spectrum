@@ -31,6 +31,8 @@ v0.3
 + Implement semi-analog swept THD+N calculation and display - done
 
 v0.3.1
+- Automatically choose the RTA smoothing width from point count and band spacing
+- Improve the delay-fitting algorithm for phase measurements
 - Add schema versions and migrations for module state
 - Isolate module discovery and initialization failures from the rest of the application
 - Track and remove module-owned menu items and callbacks during shutdown

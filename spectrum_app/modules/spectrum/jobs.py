@@ -5,7 +5,6 @@ import numpy as np
 
 from audioanalysis import (
     ASignal,
-    AnalysisMethod,
     FrequencyBand,
     SpectrumConfig,
     SpectrumResult,
@@ -14,7 +13,7 @@ from audioanalysis import (
     pink_noise,
     power_db,
 )
-from spectrum_app.core.audio import AudioInput, AudioOutput
+from spectrum_app.core.audio import CLIPPING_THRESHOLD, AudioInput, AudioOutput
 
 
 SnapshotCallback = Callable[[ASignal, ASignal], None]
@@ -60,10 +59,8 @@ class SpectrumAcquisition(Thread):
         self._writer_error: Exception | None = None
         self._writer_error_lock = Lock()
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
         self._stop_event.set()
-        self.audio_input.close()
-        self.audio_output.close()
 
     def run(self) -> None:
         chunks: list[np.ndarray] = []
@@ -115,15 +112,30 @@ class SpectrumAcquisition(Thread):
                 writer_error = self._get_writer_error()
                 if writer_error is not None:
                     raise writer_error
-                samples = min(self.audio_input.block_size, target_samples - recorded_samples)
-                block = self.audio_input.read(samples)
+                block = self.audio_input.read(self.audio_input.blocksize)
                 if len(block) == 0:
                     raise RuntimeError("Audio input returned no samples")
-                chunks.append(block)
-                recorded_samples += len(block)
+                remaining = target_samples - recorded_samples
+                active = block[:remaining]
+                if active.ndim != 2 or active.shape[1] != 2:
+                    raise RuntimeError(
+                        "Audio input must return logical channels A and B"
+                    )
+                peaks = np.max(np.abs(active), axis=0)
+                clipped = [
+                    label
+                    for label, peak in zip(("A", "B"), peaks, strict=True)
+                    if peak >= CLIPPING_THRESHOLD
+                ]
+                if clipped:
+                    raise RuntimeError(
+                        f"Input clipping detected on channel {'/'.join(clipped)}"
+                    )
+                chunks.append(active)
+                recorded_samples += len(active)
                 level_time.append(recorded_samples / input_rate)
                 level_values.append(
-                    np.max(np.abs(block[:, :2]), axis=0).astype(np.float64)
+                    np.max(np.abs(active[:, :2]), axis=0).astype(np.float64)
                 )
                 if recorded_samples >= next_level_update:
                     self.on_level(
@@ -152,14 +164,12 @@ class SpectrumAcquisition(Thread):
                 error_message = str(error)
         finally:
             self._stop_event.set()
+            if writer is not None and writer.is_alive():
+                writer.join()
             self.audio_output.close()
             self.audio_input.close()
-            if writer is not None and writer.is_alive():
-                writer.join(timeout=1.0)
             recording = (
-                ASignal(np.concatenate(chunks, axis=0), input_rate)
-                if chunks
-                else None
+                ASignal(np.concatenate(chunks, axis=0), input_rate) if chunks else None
             )
             times = np.asarray(level_time, dtype=np.float64)
             levels = (
@@ -179,18 +189,12 @@ class SpectrumAcquisition(Thread):
                 samples,
                 sample_rate,
                 self.band,
-                channels=1,
-                pad=0,
-                fade=0,
             )
         elif self.generator_mode == "pink noise":
-            signal = pink_noise(
+            signal, _ = pink_noise(
                 samples,
                 sample_rate,
                 self.band,
-                channels=1,
-                pad=0,
-                fade=0,
             )
         else:
             raise ValueError(f"Unknown generator mode: {self.generator_mode}")
@@ -201,9 +205,12 @@ class SpectrumAcquisition(Thread):
         try:
             data = generator.as_array()
             position = 0
+            blocksize = self.audio_output.blocksize
             while position < len(data) and not self._stop_event.is_set():
-                end = min(position + self.audio_output.block_size, len(data))
-                block = data[position:end, 0]
+                end = min(position + blocksize, len(data))
+                samples = end - position
+                block = np.zeros(blocksize, dtype=np.float32)
+                block[:samples] = data[position:end, 0]
                 self.audio_output.write(block)
                 position = end
         except Exception as error:

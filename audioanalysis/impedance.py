@@ -259,6 +259,55 @@ def calculate_channel_correction(
     return ChannelCalibration(frequency, correction.astype(np.complex128))
 
 
+def interpolate_channel_calibration(
+    calibration: ChannelCalibration,
+    frequency: NDArray[np.floating],
+) -> ChannelCalibration:
+    """Interpolate an existing channel correction without reanalyzing audio."""
+    source_frequency = np.asarray(calibration.frequency, dtype=np.float64)
+    source_correction = np.asarray(calibration.correction, dtype=np.complex128)
+    target_frequency = np.asarray(frequency, dtype=np.float64)
+    if (
+        source_frequency.ndim != 1
+        or source_correction.ndim != 1
+        or len(source_frequency) != len(source_correction)
+        or len(source_frequency) < 2
+        or np.any(source_frequency <= 0.0)
+        or np.any(np.diff(source_frequency) <= 0.0)
+    ):
+        raise ValueError("Invalid channel-calibration frequency grid")
+    if (
+        target_frequency.ndim != 1
+        or not len(target_frequency)
+        or np.any(target_frequency <= 0.0)
+        or np.any(np.diff(target_frequency) <= 0.0)
+    ):
+        raise ValueError("Invalid target frequency grid")
+    validate_channel_correction(source_correction)
+    if np.array_equal(source_frequency, target_frequency):
+        return ChannelCalibration(source_frequency, source_correction)
+
+    source_log = np.log(source_frequency)
+    target_log = np.log(target_frequency)
+    gain_db = 20.0 * np.log10(np.abs(source_correction))
+    phase = np.unwrap(np.angle(source_correction))
+    phase_slope, phase_offset = np.polyfit(source_frequency, phase, 1)
+    residual_phase = phase - (
+        phase_slope * source_frequency + phase_offset
+    )
+    target_phase = (
+        phase_slope * target_frequency
+        + phase_offset
+        + np.interp(target_log, source_log, residual_phase)
+    )
+    correction = np.power(
+        10.0,
+        np.interp(target_log, source_log, gain_db) / 20.0,
+    ) * np.exp(1j * target_phase)
+    validate_channel_correction(correction)
+    return ChannelCalibration(target_frequency, correction.astype(np.complex128))
+
+
 def estimate_reference_resistor(
     recording: ASignal,
     config: ImpedanceConfig,
@@ -299,23 +348,34 @@ def require_valid_reference_calibration(diagnostics: dict[str, object]) -> None:
     messages = list(raw_messages) if isinstance(raw_messages, list) else []
     if not messages:
         return
-    details = "; ".join(str(message) for message in messages)
-
     def number(key: str) -> float:
         value = diagnostics[key]
         if not isinstance(value, (int, float)):
             raise ValueError(f"Invalid calibration diagnostic: {key}")
         return float(value)
 
+    def count(key: str) -> int:
+        value = diagnostics[key]
+        if not isinstance(value, int):
+            raise ValueError(f"Invalid calibration diagnostic: {key}")
+        return value
+
+    problems = "\n".join(
+        f"- {str(message)[:1].upper()}{str(message)[1:]}" for message in messages
+    )
     raise ValueError(
-        "Calibration failed: the measured resistor network is invalid "
-        f"({details}). Estimated Rref: {number('rr_estimated'):.4g} "
-        f"Ohm; nominal: {number('rr_nominal'):.4g} Ohm; "
-        f"variation: {number('rr_real_cv'):.1%}; reactive ratio: "
-        f"{number('rr_imag_to_real_ratio'):.1%}. Entered Rc/Rr: "
-        f"{number('rc_rr_entered'):.4g}; measured Rc/Rr: "
-        f"{number('rc_rr_measured'):.4g}; difference: "
-        f"{number('rc_rr_error_rel'):.1%}."
+        "The measured reference-resistor network is invalid.\n\n"
+        f"Problems:\n{problems}\n\n"
+        "Measured values:\n"
+        f"- Rref: {number('rr_estimated'):.4g} Ohm "
+        f"(nominal: {number('rr_nominal'):.4g} Ohm)\n"
+        f"- Rref variation: {number('rr_real_cv'):.1%}\n"
+        f"- Reactive component: {number('rr_imag_to_real_ratio'):.1%}\n"
+        f"- Rc/Rref: entered {number('rc_rr_entered'):.4g}, "
+        f"measured {number('rc_rr_measured'):.4g} "
+        f"(difference: {number('rc_rr_error_rel'):.1%})\n"
+        f"- Frequency points: {count('valid_points_count')} valid, "
+        f"{count('resistive_points_count')} resistive"
     )
 
 

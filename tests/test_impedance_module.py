@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from typing import cast
 import time
 
@@ -11,7 +11,6 @@ from audioanalysis import (
     FrequencyBand,
     ImpedanceConfig,
     ImpedanceResult,
-    channel_calibration_config,
     generate_channel_calibration_signal,
     generate_measurement_signal,
 )
@@ -25,7 +24,7 @@ from tests.test_dpg_lifecycle import FakeDpgBackend
 
 class PreparedAudioInput:
     sample_rate = 8_000
-    block_size = 512
+    blocksize = 512
 
     def __init__(self) -> None:
         self.data = np.zeros((1, 2), dtype=np.float32)
@@ -57,7 +56,7 @@ class PreparedAudioInput:
 
 class DiscardingAudioOutput:
     sample_rate = 8_000
-    block_size = 512
+    blocksize = 512
 
     def open(self) -> bool:
         return True
@@ -70,6 +69,55 @@ class DiscardingAudioOutput:
 
 
 class ImpedanceModuleTests(unittest.TestCase):
+    def test_calibration_error_uses_popup_and_short_status(self) -> None:
+        app = SpectrumApplication()
+        app.main_window.set_status_text = MagicMock()
+        app.main_window.show_error = MagicMock()
+        measurement = app.create_measurement("impedance")
+        module = cast(ImpedanceModule, app.module_manager.module("impedance"))
+
+        with (
+            patch.object(ImpedanceView, "build"),
+            patch.object(ImpedanceView, "destroy"),
+            patch.object(ImpedanceView, "update"),
+            patch.object(ImpedanceView, "update_status"),
+            patch.object(ImpedanceView, "set_enabled"),
+            patch.object(ImpedanceView, "hide_calibration"),
+            patch.object(ImpedanceView, "show_calibration_stage") as show_stage,
+        ):
+            module.initialize(app)
+            module.activate(measurement)
+            try:
+                measurement.module_state["workflow"] = "waiting_reference"
+                measurement.module_state["channel_correction"] = np.ones(
+                    8,
+                    dtype=np.complex128,
+                )
+                module._fail(
+                    "Detailed calibration diagnostics",
+                    fallback="waiting_reference",
+                    calibration=True,
+                )
+
+                self.assertEqual(
+                    measurement.module_state["status"],
+                    "Calibration failed",
+                )
+                self.assertEqual(
+                    measurement.module_state["workflow"],
+                    "uncalibrated",
+                )
+                self.assertIsNone(measurement.module_state["channel_correction"])
+                app.main_window.show_error.assert_called_once_with(
+                    "Impedance calibration failed",
+                    "Detailed calibration diagnostics",
+                )
+                module.show_calibration()
+                show_stage.assert_called_once_with(1)
+            finally:
+                module.deactivate()
+                module.shutdown()
+
     def test_main_action_requests_calibration_until_module_is_ready(self) -> None:
         backend = FakeDpgBackend()
         app = SpectrumApplication()
@@ -149,6 +197,29 @@ class ImpedanceModuleTests(unittest.TestCase):
                 module.continue_calibration()
                 self._wait_for_workflow(module, measurement, "waiting_reference")
 
+                channel_recording = measurement.module_state[
+                    "channel_calibration_recording"
+                ]
+                channel_correction = measurement.module_state["channel_correction"]
+                module.set_setting("window_width", 0.15)
+                self.assertFalse(app.app_state.measuring)
+                self.assertEqual(
+                    measurement.module_state["workflow"],
+                    "waiting_reference",
+                )
+                self.assertEqual(
+                    measurement.module_state["status"],
+                    "Smoothing will apply to calibration Stage 2",
+                )
+                self.assertIs(
+                    measurement.module_state["channel_calibration_recording"],
+                    channel_recording,
+                )
+                self.assertIs(
+                    measurement.module_state["channel_correction"],
+                    channel_correction,
+                )
+
                 measurement_signal = generate_measurement_signal(config).as_array()[:, 0]
                 calibration_ratio = 20.0 / 30.0
                 audio_input.prepare(
@@ -157,6 +228,37 @@ class ImpedanceModuleTests(unittest.TestCase):
                 )
                 module.continue_calibration()
                 self._wait_for_workflow(module, measurement, "calibrated")
+
+                calibration_recordings = (
+                    measurement.module_state["channel_calibration_recording"],
+                    measurement.module_state["reference_calibration_recording"],
+                )
+                calibration_graph_ids = [graph.id for graph in measurement.graphs]
+                with patch(
+                    "spectrum_app.modules.impedance.module.calculate_channel_correction",
+                    side_effect=AssertionError("Stage 1 must not be reanalyzed"),
+                ):
+                    module.set_setting("points", 96)
+                    self._wait_for_idle(module, app)
+
+                self.assertEqual(measurement.module_state["workflow"], "calibrated")
+                self.assertEqual(
+                    measurement.module_state["status"],
+                    "Calibration reprocessed",
+                )
+                self.assertEqual(len(measurement.graphs[0].x), 96)
+                self.assertEqual(
+                    [graph.id for graph in measurement.graphs],
+                    calibration_graph_ids,
+                )
+                self.assertIs(
+                    measurement.module_state["channel_calibration_recording"],
+                    calibration_recordings[0],
+                )
+                self.assertIs(
+                    measurement.module_state["reference_calibration_recording"],
+                    calibration_recordings[1],
+                )
 
                 load_resistance = 8.0
                 load_ratio = load_resistance / (10.0 + load_resistance)
@@ -167,7 +269,30 @@ class ImpedanceModuleTests(unittest.TestCase):
                 module.start_measurement()
                 self._wait_for_workflow(module, measurement, "completed")
 
+                measurement_recording = measurement.module_state[
+                    "measurement_recording"
+                ]
+                measurement_graph_ids = [graph.id for graph in measurement.graphs]
+                with patch(
+                    "spectrum_app.modules.impedance.module.calculate_channel_correction",
+                    side_effect=AssertionError("Stage 1 must not be reanalyzed"),
+                ):
+                    module.set_setting("window_width", 0.2)
+                    self._wait_for_idle(module, app)
+
                 self.assertFalse(app.app_state.measuring)
+                self.assertEqual(
+                    measurement.module_state["status"],
+                    "Measurement reprocessed",
+                )
+                self.assertIs(
+                    measurement.module_state["measurement_recording"],
+                    measurement_recording,
+                )
+                self.assertEqual(
+                    [graph.id for graph in measurement.graphs],
+                    measurement_graph_ids,
+                )
                 self.assertIsInstance(
                     measurement.module_state["measurement_recording"],
                     ASignal,
@@ -241,6 +366,34 @@ class ImpedanceModuleTests(unittest.TestCase):
             )
             self.assertEqual(meter[1]["width"], 55)
 
+            smoothing_inputs = {
+                call[1]["tag"]: call[1]
+                for call in backend.calls
+                if call[0] in ("add_input_float", "add_input_int")
+                and call[1].get("tag")
+                in (ImpedanceView.WINDOW_WIDTH, ImpedanceView.POINTS)
+            }
+            self.assertTrue(
+                smoothing_inputs[ImpedanceView.WINDOW_WIDTH]["on_enter"]
+            )
+            self.assertTrue(smoothing_inputs[ImpedanceView.POINTS]["on_enter"])
+            self.assertIn(
+                (
+                    "bind_item_handler_registry",
+                    ImpedanceView.WINDOW_WIDTH,
+                    ImpedanceView.WINDOW_WIDTH_HANDLERS,
+                ),
+                backend.calls,
+            )
+            self.assertIn(
+                (
+                    "bind_item_handler_registry",
+                    ImpedanceView.POINTS,
+                    ImpedanceView.POINTS_HANDLERS,
+                ),
+                backend.calls,
+            )
+
             measurement.module_state["workflow"] = "completed"
             calibrate_item[1]["callback"]()
             self.assertIn(
@@ -309,6 +462,16 @@ class ImpedanceModuleTests(unittest.TestCase):
                 f"Expected {workflow}, got {measurement.module_state.get('workflow')}: "
                 f"{measurement.module_state.get('status')}"
             )
+
+    @staticmethod
+    def _wait_for_idle(module: ImpedanceModule, app: SpectrumApplication) -> None:
+        deadline = time.monotonic() + 5.0
+        while app.app_state.measuring and time.monotonic() < deadline:
+            module.update()
+            time.sleep(0.002)
+        module.update()
+        if app.app_state.measuring:
+            raise AssertionError("Impedance reprocessing did not finish")
 
 
 if __name__ == "__main__":

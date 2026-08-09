@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from enum import Enum
 from threading import Lock, Thread
 from typing import TYPE_CHECKING, Any, Callable
@@ -24,6 +25,7 @@ from audioanalysis import (
     generate_channel_calibration_signal,
     generate_level_test_signal,
     generate_measurement_signal,
+    interpolate_channel_calibration,
     require_valid_reference_calibration,
     trim_recording,
 )
@@ -48,12 +50,19 @@ class Operation(str, Enum):
     SPICE = "spice"
 
 
+@dataclass(frozen=True)
+class ReprocessResult:
+    channel: ChannelCalibration
+    reference: ReferenceCalibration | None = None
+    impedance: ImpedanceResult | None = None
+
+
 CalculationResult = (
     ChannelCalibration
     | ReferenceCalibration
     | ImpedanceResult
     | tuple[FitResult, SpiceTableValues]
-    | tuple[ChannelCalibration, ReferenceCalibration, ImpedanceResult]
+    | ReprocessResult
 )
 
 
@@ -80,6 +89,7 @@ class ImpedanceModule(BaseModule):
         "measurement_recording": None,
         "measurement_signal": None,
         "channel_correction": None,
+        "channel_correction_frequency": None,
         "reference_resistor_estimated": None,
         "reference_diagnostics": None,
         "frequency": None,
@@ -116,6 +126,7 @@ class ImpedanceModule(BaseModule):
         self._shown_levels: tuple[float, float] | None = None
         self._shown_status = ""
         self._calibration_stage: int | None = None
+        self._reprocess_requested = False
 
     def initialize(self, app: "SpectrumApplication") -> None:
         super().initialize(app)
@@ -159,13 +170,17 @@ class ImpedanceModule(BaseModule):
             signal = generate_measurement_signal(config)
             self._start_capture(Operation.MEASUREMENT, signal, config)
         except Exception as error:
-            self._fail(str(error), fallback="calibrated")
+            self._fail(
+                str(error),
+                fallback="calibrated",
+                operation=Operation.MEASUREMENT,
+            )
 
     def stop_measurement(self) -> None:
         capture = self._capture
         if capture is not None and capture.is_alive():
             self._set_status("Stopping operation...")
-            capture.stop()
+            capture.request_stop()
             return
         if self._operation is not None and self._operation != Operation.SPICE:
             self._revision += 1
@@ -187,15 +202,14 @@ class ImpedanceModule(BaseModule):
         self._revision += 1
         capture = self._capture
         if capture is not None and capture.is_alive():
-            capture.stop()
-            capture.join(timeout=2.0)
-        self.app.audio_input.close()
-        self.app.audio_output.close()
+            capture.request_stop()
+            capture.join()
         self.app.app_state.measuring = False
         self._capture = None
         self._calculation = None
         self._operation = None
         self._calibration_stage = None
+        self._reprocess_requested = False
         with self._lock:
             self._pending_level = None
             self._pending_capture = None
@@ -205,10 +219,11 @@ class ImpedanceModule(BaseModule):
         super().deactivate()
 
     def shutdown(self) -> None:
+        self._reprocess_requested = False
         capture = self._capture
         if capture is not None and capture.is_alive():
-            capture.stop()
-            capture.join(timeout=2.0)
+            capture.request_stop()
+            capture.join()
         self._view = None
         self.app.app_state.measuring = False
         super().shutdown()
@@ -247,7 +262,7 @@ class ImpedanceModule(BaseModule):
             self._calibration_stage = None
             self._start_capture(operation, signal, config)
         except Exception as error:
-            self._fail(str(error), fallback="uncalibrated")
+            self._fail(str(error), fallback="uncalibrated", calibration=True)
 
     def cancel_calibration(self, sender=None, app_data=None, user_data=None) -> None:
         self._calibration_stage = None
@@ -277,7 +292,11 @@ class ImpedanceModule(BaseModule):
                 loop=True,
             )
         except Exception as error:
-            self._fail(str(error), fallback=self.measurement.module_state["workflow"])
+            self._fail(
+                str(error),
+                fallback=self.measurement.module_state["workflow"],
+                operation=Operation.TEST,
+            )
 
     def request_spice_fit(self, sender=None, app_data=None, user_data=None) -> None:
         if self._view is None:
@@ -318,8 +337,14 @@ class ImpedanceModule(BaseModule):
             self._clear_calibration(state)
             self._clear_graphs(self.measurement)
             self._set_status("Measurement settings changed; calibration required")
-        elif key in self.FILTER_SETTINGS and state["workflow"] == "completed":
-            self._request_reprocess()
+        elif key in self.FILTER_SETTINGS:
+            workflow = state["workflow"]
+            if workflow in ("calibrated", "completed") or (
+                workflow == "waiting_reference" and key == "points"
+            ):
+                self._request_reprocess()
+            elif workflow == "waiting_reference":
+                self._set_status("Smoothing will apply to calibration Stage 2")
         return normalized
 
     def _start_capture(
@@ -377,7 +402,11 @@ class ImpedanceModule(BaseModule):
         self._capture = None
         self._levels = (0.0, 0.0)
         if error is not None:
-            self._fail(error, fallback=self._fallback_workflow(operation))
+            self._fail(
+                error,
+                fallback=self._fallback_workflow(operation),
+                operation=operation,
+            )
             return
         if cancelled:
             self.measurement.module_state["workflow"] = self._fallback_workflow(
@@ -388,7 +417,11 @@ class ImpedanceModule(BaseModule):
             )
             return
         if recording is None:
-            self._fail("Audio recording is empty", fallback=self._fallback_workflow(operation))
+            self._fail(
+                "Audio recording is empty",
+                fallback=self._fallback_workflow(operation),
+                operation=operation,
+            )
             return
         try:
             recording = trim_recording(recording, signal.sample_count)
@@ -401,7 +434,11 @@ class ImpedanceModule(BaseModule):
                 ] = self._capture_signature(config)
             self._start_operation_calculation(operation, recording, config)
         except Exception as error_value:
-            self._fail(str(error_value), fallback=self._fallback_workflow(operation))
+            self._fail(
+                str(error_value),
+                fallback=self._fallback_workflow(operation),
+                operation=operation,
+            )
 
     def _start_operation_calculation(
         self,
@@ -480,12 +517,17 @@ class ImpedanceModule(BaseModule):
                 if self._view is not None:
                     self._view.show_spice(f"SPICE Fit failed: {error}", None)
                 return
-            self._fail(error or "Calculation failed", self._fallback_workflow(operation))
+            self._fail(
+                error or "Calculation failed",
+                self._fallback_workflow(operation),
+                operation=operation,
+            )
             return
 
         if operation == Operation.CHANNEL_CALIBRATION:
             assert isinstance(result, ChannelCalibration)
             state["channel_correction"] = result.correction
+            state["channel_correction_frequency"] = result.frequency
             state["workflow"] = "waiting_reference"
             self._finish_operation("Connect Rref and Rcal for calibration stage 2")
             self._show_calibration_stage(2)
@@ -513,21 +555,37 @@ class ImpedanceModule(BaseModule):
             self._update_graphs(self.measurement, result)
             self._finish_operation("Measurement completed")
         elif operation == Operation.REPROCESS:
-            assert isinstance(result, tuple) and len(result) == 3
-            channel, reference, impedance_result = result
-            assert isinstance(channel, ChannelCalibration)
-            assert isinstance(reference, ReferenceCalibration)
-            assert isinstance(impedance_result, ImpedanceResult)
-            state["channel_correction"] = channel.correction
-            state["reference_resistor_estimated"] = reference.reference_resistor
-            state["reference_diagnostics"] = reference.diagnostics
-            state["frequency"] = impedance_result.frequency
-            state["impedance"] = impedance_result.impedance
-            state["workflow"] = "completed"
+            assert isinstance(result, ReprocessResult)
+            state["channel_correction"] = result.channel.correction
+            state["channel_correction_frequency"] = result.channel.frequency
+            if result.reference is None:
+                state["workflow"] = "waiting_reference"
+                status = "Channel calibration reprocessed"
+            else:
+                reference = result.reference
+                state["reference_resistor_estimated"] = reference.reference_resistor
+                state["reference_diagnostics"] = reference.diagnostics
+                state["frequency"] = reference.frequency
+                state["impedance"] = reference.impedance
+                state["workflow"] = "calibrated"
+                self._update_graphs(
+                    self.measurement,
+                    ImpedanceResult(reference.frequency, reference.impedance),
+                )
+                status = "Calibration reprocessed"
+            if result.impedance is not None:
+                impedance_result = result.impedance
+                state["frequency"] = impedance_result.frequency
+                state["impedance"] = impedance_result.impedance
+                state["workflow"] = "completed"
+                self._update_graphs(self.measurement, impedance_result)
+                status = "Measurement reprocessed"
             state["fit_result"] = None
             state["spice_values"] = None
-            self._update_graphs(self.measurement, impedance_result)
-            self._finish_operation("Measurement reprocessed")
+            self._finish_operation(status)
+            if self._reprocess_requested:
+                self._reprocess_requested = False
+                self._request_reprocess()
         elif operation == Operation.SPICE:
             assert isinstance(result, tuple) and len(result) == 2
             fit, values = result
@@ -541,41 +599,71 @@ class ImpedanceModule(BaseModule):
 
     def _request_reprocess(self) -> None:
         if self._is_busy():
+            if self._operation == Operation.REPROCESS:
+                self._reprocess_requested = True
             return
         state = self.measurement.module_state
-        recordings = (
-            state.get("channel_calibration_recording"),
-            state.get("reference_calibration_recording"),
-            state.get("measurement_recording"),
-        )
-        if not all(isinstance(item, ASignal) for item in recordings):
+        workflow = str(state["workflow"])
+        correction = state.get("channel_correction")
+        if not isinstance(correction, np.ndarray):
             return
-        channel_recording, reference_recording, measurement_recording = recordings
-        assert isinstance(channel_recording, ASignal)
-        assert isinstance(reference_recording, ASignal)
-        assert isinstance(measurement_recording, ASignal)
-        config = self._build_config(sample_rate=measurement_recording.sample_rate)
+        reference_recording = (
+            state.get("reference_calibration_recording")
+            if workflow in ("calibrated", "completed")
+            else None
+        )
+        measurement_recording = (
+            state.get("measurement_recording") if workflow == "completed" else None
+        )
+        if workflow in ("calibrated", "completed") and not isinstance(
+            reference_recording,
+            ASignal,
+        ):
+            return
+        if workflow == "completed" and not isinstance(measurement_recording, ASignal):
+            return
+        sample_rate = self._calibration_sample_rate(state)
+        config = self._build_config(sample_rate=sample_rate)
+        source_frequency = self._channel_correction_frequency(state, correction)
+        target_frequency = np.geomspace(
+            config.band.low,
+            config.band.high,
+            config.points,
+        )
+        stored_channel = ChannelCalibration(
+            source_frequency,
+            np.asarray(correction, dtype=np.complex128),
+        )
+        self._operation_fallback = workflow
 
         def calculate() -> CalculationResult:
-            channel = calculate_channel_correction(
-                channel_recording,
-                channel_calibration_config(config),
+            channel = interpolate_channel_calibration(
+                stored_channel,
+                target_frequency,
             )
+            if not isinstance(reference_recording, ASignal):
+                return ReprocessResult(channel)
             reference = estimate_reference_resistor(
                 reference_recording,
                 config,
                 channel.correction,
             )
             require_valid_reference_calibration(reference.diagnostics)
+            if not isinstance(measurement_recording, ASignal):
+                return ReprocessResult(channel, reference)
             impedance_result = calculate_impedance(
                 measurement_recording,
                 config,
                 channel.correction,
                 reference.reference_resistor,
             )
-            return channel, reference, impedance_result
+            return ReprocessResult(channel, reference, impedance_result)
 
-        self._set_status("Reprocessing measurement...")
+        self._set_status(
+            "Reprocessing measurement..."
+            if workflow == "completed"
+            else "Reprocessing calibration..."
+        )
         self._start_calculation(Operation.REPROCESS, calculate)
 
     def _store_capture(
@@ -673,6 +761,35 @@ class ImpedanceModule(BaseModule):
         ]
         self.app.app_state.graph_data_changed = True
 
+    @staticmethod
+    def _calibration_sample_rate(state: dict[str, Any]) -> int:
+        for key in (
+            "channel_calibration_recording",
+            "reference_calibration_recording",
+            "measurement_recording",
+        ):
+            recording = state.get(key)
+            if isinstance(recording, ASignal):
+                return recording.sample_rate
+        raise ValueError("Stored calibration sample rate is unavailable")
+
+    @staticmethod
+    def _channel_correction_frequency(
+        state: dict[str, Any],
+        correction: np.ndarray,
+    ) -> np.ndarray:
+        stored = state.get("channel_correction_frequency")
+        if isinstance(stored, np.ndarray) and stored.shape == correction.shape:
+            return np.asarray(stored, dtype=np.float64)
+        result_frequency = state.get("frequency")
+        if (
+            isinstance(result_frequency, np.ndarray)
+            and result_frequency.shape == correction.shape
+        ):
+            return np.asarray(result_frequency, dtype=np.float64)
+        band = FrequencyBand(*state["band"])
+        return np.geomspace(band.low, band.high, len(correction))
+
     def _build_config(self, *, sample_rate: int | None = None) -> ImpedanceConfig:
         state = self.measurement.module_state
         rate = sample_rate or self.app.audio_input.sample_rate
@@ -720,12 +837,43 @@ class ImpedanceModule(BaseModule):
         self._set_controls_enabled(True)
         self._set_status(status)
 
-    def _fail(self, error: str, fallback: str) -> None:
-        self.measurement.module_state["workflow"] = fallback
+    def _fail(
+        self,
+        error: str,
+        fallback: str,
+        *,
+        operation: Operation | None = None,
+        calibration: bool = False,
+    ) -> None:
+        failed_operation = operation or self._operation
+        calibration = calibration or failed_operation in (
+            Operation.CHANNEL_CALIBRATION,
+            Operation.REFERENCE_CALIBRATION,
+        )
+        clipping = "clipping" in error.lower()
+        if failed_operation == Operation.REPROCESS:
+            self._reprocess_requested = False
+        if calibration:
+            self._clear_calibration(self.measurement.module_state)
+            self._calibration_stage = None
+            if self._view is not None:
+                self._view.hide_calibration()
+        else:
+            self.measurement.module_state["workflow"] = fallback
         self._operation = None
         self.app.app_state.measuring = False
         self._set_controls_enabled(True)
-        self._set_status(f"Impedance error: {error}")
+        if calibration:
+            status = "Calibration failed"
+            title = "Impedance calibration failed"
+        elif clipping:
+            status = "Impedance stopped: clipping"
+            title = "Impedance clipping"
+        else:
+            status = "Impedance failed"
+            title = "Impedance error"
+        self._set_status(status)
+        self.app.main_window.show_error(title, error)
 
     def _set_status(self, status: str) -> None:
         self.measurement.module_state["status"] = status
@@ -765,7 +913,11 @@ class ImpedanceModule(BaseModule):
         if operation == Operation.REFERENCE_CALIBRATION:
             return "waiting_reference"
         if operation in (Operation.MEASUREMENT, Operation.REPROCESS):
-            return "calibrated"
+            return (
+                self._operation_fallback
+                if operation == Operation.REPROCESS
+                else "calibrated"
+            )
         if operation == Operation.CHANNEL_CALIBRATION:
             return "uncalibrated"
         return self._operation_fallback
@@ -800,6 +952,7 @@ class ImpedanceModule(BaseModule):
             "measurement_recording",
             "measurement_signal",
             "channel_correction",
+            "channel_correction_frequency",
             "reference_resistor_estimated",
             "reference_diagnostics",
             "frequency",

@@ -30,8 +30,8 @@ class PhaseModule(BaseModule):
         "duration": 5.0,
         "smoothing_octaves": 1.0 / 3.0,
         "points": 1024,
-        "delay_fit_band": (80, 15_000),
-        "delay_correction_meters": 0.0,
+        "delay_correction_meters": None,
+        "delay_correction_is_total": True,
         "recording": None,
         "generator": None,
         "level_time": np.empty(0, dtype=np.float64),
@@ -48,7 +48,6 @@ class PhaseModule(BaseModule):
     ANALYSIS_SETTINGS = {
         "smoothing_octaves",
         "points",
-        "delay_fit_band",
         "delay_correction_meters",
     }
 
@@ -95,7 +94,6 @@ class PhaseModule(BaseModule):
     def activate(self, measurement: Measurement) -> None:
         super().activate(measurement)
         self._ensure_state(measurement.module_state)
-        self._constrain_delay_fit(measurement.module_state)
         if self._view is None:
             raise RuntimeError("Phase module is not initialized")
         self._view.build(
@@ -170,13 +168,13 @@ class PhaseModule(BaseModule):
         except Exception as error:
             self.app.app_state.measuring = False
             self._set_controls_enabled(True)
-            self._set_status(f"Phase error: {error}")
+            self._show_error(str(error))
 
     def stop_measurement(self) -> None:
         acquisition = self._acquisition
         if acquisition is not None and acquisition.is_alive():
             self._set_status("Stopping Phase measurement...")
-            acquisition.stop()
+            acquisition.request_stop()
             return
         if self._finishing_revision is not None:
             self._invalidate_analysis()
@@ -204,10 +202,8 @@ class PhaseModule(BaseModule):
         self._capture_revision += 1
         acquisition = self._acquisition
         if acquisition is not None and acquisition.is_alive():
-            acquisition.stop()
-            acquisition.join(timeout=2.0)
-        self.app.audio_input.close()
-        self.app.audio_output.close()
+            acquisition.request_stop()
+            acquisition.join()
         self.app.app_state.measuring = False
         self._acquisition = None
         self._invalidate_analysis()
@@ -222,8 +218,8 @@ class PhaseModule(BaseModule):
     def shutdown(self) -> None:
         acquisition = self._acquisition
         if acquisition is not None and acquisition.is_alive():
-            acquisition.stop()
-            acquisition.join(timeout=2.0)
+            acquisition.request_stop()
+            acquisition.join()
         if self._analyzer is not None:
             self._analyzer.shutdown()
             self._analyzer = None
@@ -247,8 +243,6 @@ class PhaseModule(BaseModule):
         if state.get(key) == normalized:
             return normalized
         state[key] = normalized
-        if key == "band":
-            self._constrain_delay_fit(state)
         if key in self.CAPTURE_SETTINGS:
             self._clear_measurement_data(self.measurement)
             self._set_status("Phase measurement settings changed; measure again")
@@ -323,7 +317,16 @@ class PhaseModule(BaseModule):
         measurement.module_state["level_time"] = times
         measurement.module_state["level_values"] = levels
         if self._view is not None:
-            self._view.update_levels(current)
+            self._view.update_levels(
+                times,
+                levels,
+                current,
+                duration=(
+                    float(measurement.module_state["duration"])
+                    + self.settings.pre_silence
+                    + self.settings.post_silence
+                ),
+            )
 
     def _process_completion(
         self,
@@ -354,7 +357,7 @@ class PhaseModule(BaseModule):
         if error is not None or recording is None or generator is None:
             self.app.app_state.measuring = False
             self._set_controls_enabled(True)
-            self._set_status(f"Phase error: {error or 'Audio recording is empty'}")
+            self._show_error(error or "Audio recording is empty")
             return
         peaks = recording.max()
         labels = ("A", "B")
@@ -362,12 +365,12 @@ class PhaseModule(BaseModule):
             if float(peaks[index]) >= 0.999:
                 self.app.app_state.measuring = False
                 self._set_controls_enabled(True)
-                self._set_status(f"Phase error: clipping detected on input {label}")
+                self._show_error(f"Input clipping detected on channel {label}")
                 return
             if float(peaks[index]) < self.MINIMUM_INPUT_LEVEL:
                 self.app.app_state.measuring = False
                 self._set_controls_enabled(True)
-                self._set_status(f"Phase error: input {label} is below -60 dBFS")
+                self._show_error(f"Input {label} is below -60 dBFS")
                 return
 
         measurement.module_state["recording"] = recording
@@ -388,7 +391,7 @@ class PhaseModule(BaseModule):
             config = self._build_config(recording.sample_rate)
             config.validate(recording.sample_rate)
         except Exception as error:
-            self._set_status(f"Phase error: {error}")
+            self._show_error(str(error))
             if finishing:
                 self.app.app_state.measuring = False
                 self._set_controls_enabled(True)
@@ -412,7 +415,7 @@ class PhaseModule(BaseModule):
         measurement = self._analysis_measurement
         if measurement is not None and measurement is self._active_measurement():
             if error is not None or result is None:
-                self._set_status(f"Phase error: {error or 'Calculation failed'}")
+                self._show_error(error or "Calculation failed")
             else:
                 self._store_result(measurement, result)
                 self._update_graph(measurement, result)
@@ -433,16 +436,15 @@ class PhaseModule(BaseModule):
         state["result_phase_degrees"] = result.phase_degrees
         state["estimated_delay_seconds"] = result.estimated_delay_seconds
         state["estimated_delay_meters"] = result.estimated_delay_meters
+        if state.get("delay_correction_meters") is None:
+            state["delay_correction_meters"] = result.estimated_delay_meters
         state["analysis_signature"] = self._analysis_signature(
             self._build_config(measurement.module_state["recording"].sample_rate)
         )
         if self._view is not None:
             self._view.update_result(
-                result.frequency,
-                result.magnitude_db,
-                result.estimated_delay_seconds,
                 result.estimated_delay_meters,
-                band=state["band"],
+                state["delay_correction_meters"],
             )
 
     def _reanalyze_stored_recording(self) -> None:
@@ -456,12 +458,15 @@ class PhaseModule(BaseModule):
 
     def _build_config(self, sample_rate: int) -> PhaseConfig:
         state = self.measurement.module_state
+        correction = state["delay_correction_meters"]
         return PhaseConfig(
             band=FrequencyBand(*state["band"]),
-            delay_fit_band=FrequencyBand(*state["delay_fit_band"]),
+            delay_fit_band=FrequencyBand(*state["band"]),
             points=int(state["points"]),
             smoothing_octaves=float(state["smoothing_octaves"]),
-            delay_correction_meters=float(state["delay_correction_meters"]),
+            delay_correction_meters=(
+                float(correction) if correction is not None else None
+            ),
             minimum_a_db=-60.0,
             minimum_b_db=-60.0,
         )
@@ -522,6 +527,7 @@ class PhaseModule(BaseModule):
             "analysis_signature",
         ):
             state[key] = None
+        state["delay_correction_meters"] = None
         graph_ids = {graph.id for graph in measurement.graphs}
         measurement.graphs.clear()
         self.app.app_state.visible_graph_ids = [
@@ -531,13 +537,22 @@ class PhaseModule(BaseModule):
         ]
         self.app.app_state.graph_data_changed = True
         if self._view is not None and measurement is self._active_measurement():
-            self._view.update_result(None, None, None, None, band=state["band"])
+            self._view.update_result(None, None)
 
     def _clear_level_history(self, measurement: Measurement) -> None:
         measurement.module_state["level_time"] = np.empty(0, dtype=np.float64)
         measurement.module_state["level_values"] = np.empty((0, 2), dtype=np.float64)
         if self._view is not None and measurement is self._active_measurement():
-            self._view.update_levels((0.0, 0.0))
+            self._view.update_levels(
+                np.empty(0, dtype=np.float64),
+                np.empty((0, 2), dtype=np.float64),
+                (0.0, 0.0),
+                duration=(
+                    float(measurement.module_state["duration"])
+                    + self.settings.pre_silence
+                    + self.settings.post_silence
+                ),
+            )
 
     def _invalidate_analysis(self) -> None:
         self._analysis_revision += 1
@@ -561,19 +576,22 @@ class PhaseModule(BaseModule):
             measurement.module_state["status"] = text
         self.app.main_window.set_status_text(text)
 
+    def _show_error(self, message: str) -> None:
+        clipping = "clipping" in message.lower()
+        self._set_status("Phase stopped: clipping" if clipping else "Phase failed")
+        self.app.main_window.show_error(
+            "Phase clipping" if clipping else "Phase error",
+            message,
+        )
+
     @classmethod
     def _ensure_state(cls, state: dict[str, Any]) -> None:
+        state.pop("delay_fit_band", None)
+        if "delay_correction_is_total" not in state:
+            # Pre-contract values were additional distance, not total distance.
+            state["delay_correction_meters"] = None
         for key, value in cls.DEFAULT_STATE.items():
             state.setdefault(key, deepcopy(value))
-
-    @staticmethod
-    def _constrain_delay_fit(state: dict[str, Any]) -> tuple[int, int]:
-        band_low, band_high = map(int, state["band"])
-        fit_low, fit_high = map(int, state["delay_fit_band"])
-        fit_low = min(max(band_low, fit_low), band_high - 1)
-        fit_high = max(fit_low + 1, min(band_high, fit_high))
-        state["delay_fit_band"] = fit_low, fit_high
-        return fit_low, fit_high
 
     @staticmethod
     def _normalize_setting(key: str, value: Any, state: dict[str, Any]) -> Any:
@@ -587,11 +605,6 @@ class PhaseModule(BaseModule):
             return min(3.0, max(0.01, float(value)))
         if key == "points":
             return min(100_000, max(2, int(value)))
-        if key == "delay_fit_band":
-            band_low, band_high = map(int, state["band"])
-            low, high = int(value[0]), int(value[1])
-            low = min(max(band_low, low), band_high - 1)
-            return low, max(low + 1, min(band_high, high))
         if key == "delay_correction_meters":
             return min(1_000.0, max(-1_000.0, float(value)))
         raise ValueError(f"Unknown Phase setting: {key}")

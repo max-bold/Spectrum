@@ -19,6 +19,11 @@ class AxisSpec(str, Enum):
     THD = "thd"
 
 
+class PlotType(str, Enum):
+    LINE = "line"
+    BARS = "bars"
+
+
 @dataclass
 class GraphData:
     """One calculated series that can be displayed by the plot workspace."""
@@ -29,6 +34,7 @@ class GraphData:
     x_axis: AxisSpec
     y_axis: AxisSpec
     id: str = field(default_factory=_new_id)
+    plot_type: PlotType = PlotType.LINE
 
 
 @dataclass

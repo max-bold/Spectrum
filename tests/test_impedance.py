@@ -4,6 +4,7 @@ import numpy as np
 
 from audioanalysis import (
     ASignal,
+    ChannelCalibration,
     FrequencyBand,
     ImpedanceConfig,
     analyze_recording_levels,
@@ -14,6 +15,7 @@ from audioanalysis import (
     generate_channel_calibration_signal,
     generate_level_test_signal,
     generate_measurement_signal,
+    interpolate_channel_calibration,
     require_valid_reference_calibration,
     speaker_impedance,
 )
@@ -21,6 +23,51 @@ from audioanalysis.impedance import estimate_reference_resistor
 
 
 class ImpedanceMathTests(unittest.TestCase):
+    def test_channel_calibration_can_be_interpolated_without_raw_audio(self) -> None:
+        source_frequency = np.geomspace(20.0, 20_000.0, 32)
+        source = np.power(10.0, 0.5 / 20.0) * np.exp(
+            -1j * 2.0 * np.pi * source_frequency * 20e-6
+        )
+        target_frequency = np.geomspace(20.0, 20_000.0, 128)
+
+        result = interpolate_channel_calibration(
+            ChannelCalibration(source_frequency, source),
+            target_frequency,
+        )
+
+        self.assertEqual(result.correction.shape, (128,))
+        np.testing.assert_allclose(np.abs(result.correction), np.abs(source[0]))
+        np.testing.assert_allclose(
+            np.unwrap(np.angle(result.correction)),
+            -2.0 * np.pi * target_frequency * 20e-6,
+            atol=1e-12,
+        )
+
+    def test_invalid_reference_calibration_has_readable_multiline_details(self) -> None:
+        diagnostics = {
+            "fatal_warnings": [
+                "estimated Rref is not positive",
+                "not enough resistive frequency points",
+            ],
+            "rr_estimated": -0.0002724,
+            "rr_nominal": 3.25,
+            "rr_real_cv": 1.102,
+            "rr_imag_to_real_ratio": 0.865,
+            "rc_rr_entered": 3.2,
+            "rc_rr_measured": float("inf"),
+            "rc_rr_error_rel": float("inf"),
+            "valid_points_count": 110,
+            "resistive_points_count": 0,
+        }
+
+        with self.assertRaises(ValueError) as raised:
+            require_valid_reference_calibration(diagnostics)
+
+        message = str(raised.exception)
+        self.assertIn("Problems:\n- Estimated Rref is not positive", message)
+        self.assertIn("\n\nMeasured values:\n", message)
+        self.assertIn("Frequency points: 110 valid, 0 resistive", message)
+
     def test_generators_return_asignal(self) -> None:
         config = ImpedanceConfig(
             sample_rate=8_000,

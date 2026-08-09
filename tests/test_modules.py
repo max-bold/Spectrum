@@ -6,6 +6,7 @@ from spectrum_app import SpectrumApplication
 from spectrum_app.modules.manager import ModuleManager
 from spectrum_app.modules.impedance import ImpedanceModule
 from spectrum_app.modules.phase import PhaseModule
+from spectrum_app.modules.rta import RTAModule
 from spectrum_app.modules.spectrum import SpectrumModule
 from spectrum_app.modules.thd import THDModule
 
@@ -16,7 +17,11 @@ class ModuleManagerTests(unittest.TestCase):
 
         self.assertEqual(
             app.module_manager.module_ids,
-            ("impedance", "phase", "spectrum", "thd"),
+            ("impedance", "phase", "rta", "spectrum", "thd"),
+        )
+        self.assertIsInstance(
+            app.module_manager.module("rta"),
+            RTAModule,
         )
         self.assertIsInstance(
             app.module_manager.module("impedance"),

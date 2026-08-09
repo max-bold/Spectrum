@@ -10,7 +10,7 @@
 - `multitone`
 - `white_noise`
 - `pink_noise`
-- `pink_noise_zi`
+- `pinking_sos`
 - `normalize_peak`
 - `as_channels`
 - `SmoothingWindow`
@@ -31,9 +31,12 @@
 - `magnitude_db`
 - `power_db`
 - `phase_degrees`
+- `RTAConfig`
+- `RTAResult`
+- `analyze_rta`
+- `compensate_log_band_density`
 - `peak_levels`
 - `AudioDevice`
-- `PinkNoiseThread`
 - `StreamConfig`
 - `Recording`
 - `list_devices`

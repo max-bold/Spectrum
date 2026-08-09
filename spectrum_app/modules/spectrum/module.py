@@ -154,7 +154,7 @@ class SpectrumModule(BaseModule):
         except Exception as error:
             self.app.app_state.measuring = False
             self._set_controls_enabled(True)
-            self._set_status(f"Spectrum error: {error}")
+            self._show_error(str(error))
 
     def stop_measurement(self) -> None:
         acquisition = self._acquisition
@@ -164,7 +164,7 @@ class SpectrumModule(BaseModule):
             return
         self._stop_requested = True
         self._set_status("Stopping Spectrum measurement...")
-        acquisition.stop()
+        acquisition.request_stop()
 
     def update(self) -> None:
         self._process_analysis_response()
@@ -190,9 +190,7 @@ class SpectrumModule(BaseModule):
         self.stop_measurement()
         acquisition = self._acquisition
         if acquisition is not None and acquisition.is_alive():
-            acquisition.join(timeout=2.0)
-        self.app.audio_input.close()
-        self.app.audio_output.close()
+            acquisition.join()
         self.app.app_state.measuring = False
         self._invalidate_analysis()
         with self._runtime_lock:
@@ -206,8 +204,8 @@ class SpectrumModule(BaseModule):
     def shutdown(self) -> None:
         acquisition = self._acquisition
         if acquisition is not None and acquisition.is_alive():
-            acquisition.stop()
-            acquisition.join(timeout=2.0)
+            acquisition.request_stop()
+            acquisition.join()
         if self._analyzer is not None:
             self._analyzer.shutdown()
             self._analyzer = None
@@ -334,11 +332,17 @@ class SpectrumModule(BaseModule):
             self.app.app_state.measuring = False
             self._set_controls_enabled(True)
             message = error or "Measurement stopped before audio was recorded"
-            self._set_status(f"Spectrum error: {message}" if error else message)
+            if error is not None:
+                self._show_error(message)
+            else:
+                self._set_status(message)
             return
 
         if error is not None:
-            self._finish_status = f"Spectrum error: {error}"
+            self.app.app_state.measuring = False
+            self._set_controls_enabled(True)
+            self._show_error(error)
+            return
         elif self._stop_requested:
             self._finish_status = "Spectrum measurement stopped"
         else:
@@ -365,7 +369,7 @@ class SpectrumModule(BaseModule):
         try:
             signal, config = self._analysis_input(recording, generator, method)
         except Exception as error:
-            self._set_status(f"Spectrum error: {error}")
+            self._show_error(str(error))
             if finish_measurement:
                 self.app.app_state.measuring = False
                 self._set_controls_enabled(True)
@@ -388,7 +392,7 @@ class SpectrumModule(BaseModule):
         if revision != self._current_revision:
             return
         if error is not None or result is None:
-            self._set_status(f"Spectrum error: {error}")
+            self._show_error(error or "Calculation failed")
         else:
             measurement = self._active_measurement()
             if measurement is not None:
@@ -515,6 +519,14 @@ class SpectrumModule(BaseModule):
 
     def _set_status(self, text: str) -> None:
         self.app.main_window.set_status_text(text)
+
+    def _show_error(self, message: str) -> None:
+        clipping = "clipping" in message.lower()
+        self._set_status("Spectrum stopped: clipping" if clipping else "Spectrum failed")
+        self.app.main_window.show_error(
+            "Spectrum clipping" if clipping else "Spectrum error",
+            message,
+        )
 
     @classmethod
     def _ensure_state(cls, state: dict[str, Any]) -> None:

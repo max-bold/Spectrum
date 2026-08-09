@@ -19,7 +19,7 @@ from tests.test_dpg_lifecycle import FakeDpgBackend
 
 class PreparedPhaseInput:
     sample_rate = 8_000
-    block_size = 256
+    blocksize = 256
 
     def __init__(self) -> None:
         self.position = 0
@@ -48,7 +48,7 @@ class PreparedPhaseInput:
 
 class RecordingPhaseOutput:
     sample_rate = 8_000
-    block_size = 256
+    blocksize = 256
 
     def __init__(self) -> None:
         self.write_threads: set[str] = set()
@@ -66,7 +66,7 @@ class RecordingPhaseOutput:
 
 
 class PhaseModuleTests(unittest.TestCase):
-    def test_view_builds_phase_controls_meter_and_compact_response(self) -> None:
+    def test_view_builds_phase_controls_meter_and_level_history(self) -> None:
         backend = FakeDpgBackend()
         app = SpectrumApplication()
         measurement = app.create_measurement("phase")
@@ -87,7 +87,7 @@ class PhaseModuleTests(unittest.TestCase):
                 self.assertEqual(measurement.module_state["points"], 1024)
                 self.assertEqual(
                     measurement.module_state["delay_correction_meters"],
-                    0.0,
+                    None,
                 )
                 self.assertTrue(
                     any(
@@ -95,14 +95,22 @@ class PhaseModuleTests(unittest.TestCase):
                         for call in backend.calls
                     )
                 )
-                response_plot = next(
+                level_plot = next(
                     call
                     for call in backend.calls
-                    if call[0] == "plot"
-                    and call[1].get("tag") == PhaseView.RESPONSE_PLOT
+                    if call[0] == "plot" and call[1].get("tag") == PhaseView.LEVEL_PLOT
                 )
-                self.assertNotIn("label", response_plot[1])
-                self.assertEqual(response_plot[1]["width"], -1)
+                self.assertNotIn("label", level_plot[1])
+                self.assertEqual(level_plot[1]["width"], -1)
+                level_series = {
+                    call[3].get("tag")
+                    for call in backend.calls
+                    if call[0] == "add_line_series"
+                }
+                self.assertEqual(
+                    level_series,
+                    {PhaseView.LEVEL_SERIES_A, PhaseView.LEVEL_SERIES_B},
+                )
                 control_tags = {
                     call[1].get("tag")
                     for call in backend.calls
@@ -114,7 +122,6 @@ class PhaseModuleTests(unittest.TestCase):
                         PhaseView.DURATION,
                         PhaseView.SMOOTHING,
                         PhaseView.POINTS,
-                        PhaseView.DELAY_FIT,
                         PhaseView.DELAY_CORRECTION,
                     }.issubset(control_tags)
                 )
@@ -194,6 +201,11 @@ class PhaseModuleTests(unittest.TestCase):
                 self.assertEqual(measurement.graphs[0].name, "Phase")
                 self.assertEqual(measurement.graphs[0].y_axis, AxisSpec.PHASE)
                 self.assertEqual(measurement.graphs[0].y.shape, (128,))
+                self.assertNotIn("delay_fit_band", measurement.module_state)
+                self.assertIsInstance(
+                    measurement.module_state["delay_correction_meters"],
+                    float,
+                )
             finally:
                 module.deactivate()
                 module.shutdown()

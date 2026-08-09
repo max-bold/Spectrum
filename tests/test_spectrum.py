@@ -13,6 +13,8 @@ from audioanalysis import (
     calculate_power_spectrum,
     log_chirp,
     pink_noise,
+    pinking_sos,
+    white_noise,
 )
 
 
@@ -77,20 +79,48 @@ class SpectrumAnalysisTests(unittest.TestCase):
             )
 
     def test_generators_return_asignal(self) -> None:
-        chirp = log_chirp(2048, 48_000, (20.0, 20_000.0), pad=0, fade=0)
-        noise = pink_noise(
+        band = FrequencyBand((20.0, 20_000.0))
+        chirp = log_chirp(2048, 48_000, band)
+        noise, zi = pink_noise(
             2048,
             48_000,
-            (20.0, 20_000.0),
+            band,
             rng=np.random.default_rng(42),
-            pad=0,
-            fade=0,
         )
 
         self.assertIsInstance(chirp, ASignal)
         self.assertIsInstance(noise, ASignal)
         self.assertEqual(chirp.sample_rate, 48_000)
         self.assertEqual(noise.sample_rate, 48_000)
+        self.assertEqual(zi.ndim, 2)
+
+    def test_frequency_band_accepts_two_numbers_or_tuple(self) -> None:
+        self.assertEqual(
+            FrequencyBand(30.0, 18_000.0),
+            FrequencyBand((30.0, 18_000.0)),
+        )
+
+    def test_generators_are_mono_and_pink_noise_always_returns_state(self) -> None:
+        chirp = log_chirp(128)
+        white = white_noise(128, rng=np.random.default_rng(1))
+        pink, zi = pink_noise(128, rng=np.random.default_rng(2))
+
+        self.assertEqual(chirp.channel_count, 1)
+        self.assertEqual(white.channel_count, 1)
+        self.assertEqual(pink.channel_count, 1)
+        self.assertEqual(zi.shape, (pinking_sos(44_100).shape[0], 2))
+
+    def test_pink_noise_state_makes_consecutive_blocks_continuous(self) -> None:
+        first_rng = np.random.default_rng(123)
+        first, zi = pink_noise(256, rng=first_rng)
+        second, _ = pink_noise(256, rng=first_rng, zi=zi)
+
+        complete, _ = pink_noise(512, rng=np.random.default_rng(123))
+
+        np.testing.assert_allclose(
+            np.vstack((first.as_array(), second.as_array())),
+            complete.as_array(),
+        )
 
 
 if __name__ == "__main__":

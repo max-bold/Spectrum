@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, cast
 import dearpygui.dearpygui as dpg
 
 from spectrum_app.core.audio import AudioDirection
+from spectrum_app.core.model import AxisSpec
 from spectrum_app.core.settings import AxisScale, PhaseUnit
 
 if TYPE_CHECKING:
@@ -10,8 +11,8 @@ if TYPE_CHECKING:
 
 
 class SettingsWindow:
-    WIDTH = 667
-    HEIGHT = 400
+    WIDTH = 600
+    HEIGHT = 450
 
     def __init__(self, app: "SpectrumApplication") -> None:
         self.app = app
@@ -106,7 +107,7 @@ class SettingsWindow:
                         tag=self.input_routing_host,
                     ):
                         pass
-                    dpg.add_text("Recommended input block size")
+                    dpg.add_text("Input block size")
                     dpg.add_input_int(
                         tag=self.input_block_size,
                         default_value=settings.input_block_size,
@@ -130,7 +131,7 @@ class SettingsWindow:
                         tag=self.output_routing_host,
                     ):
                         pass
-                    dpg.add_text("Recommended output block size")
+                    dpg.add_text("Output block size")
                     dpg.add_input_int(
                         tag=self.output_block_size,
                         default_value=settings.output_block_size,
@@ -219,9 +220,7 @@ class SettingsWindow:
                                 logical_index,
                                 physical_channel,
                             ),
-                            default_value=(
-                                routing[logical_index] == physical_channel
-                            ),
+                            default_value=(routing[logical_index] == physical_channel),
                             callback=self._set_input_route,
                             user_data=(logical_index, physical_channel),
                         )
@@ -252,9 +251,7 @@ class SettingsWindow:
                         user_data=physical_channel,
                     )
 
-    def _device_items(
-        self, direction: AudioDirection
-    ) -> tuple[list[str], str]:
+    def _device_items(self, direction: AudioDirection) -> tuple[list[str], str]:
         if direction == "input":
             default_label = self.app._audio_service.DEFAULT_INPUT_LABEL
             devices = self.app._audio_service.input_devices
@@ -305,33 +302,47 @@ class SettingsWindow:
     ) -> None:
         self.app.settings.impedance_scale = cast(AxisScale, value)
 
-    def _set_thd_scale(
-        self, sender: int | str, value: str, user_data=None
-    ) -> None:
+    def _set_thd_scale(self, sender: int | str, value: str, user_data=None) -> None:
         self.app.settings.thd_scale = cast(AxisScale, value)
 
-    def _set_phase_unit(
-        self, sender: int | str, value: str, user_data=None
-    ) -> None:
-        self.app.settings.phase_unit = cast(PhaseUnit, value)
+    def _set_phase_unit(self, sender: int | str, value: str, user_data=None) -> None:
+        phase_unit = cast(PhaseUnit, value)
+        if phase_unit == self.app.settings.phase_unit:
+            return
+        self.app.settings.phase_unit = phase_unit
+        self.app.main_window.plot.request_axis_autoscale(AxisSpec.PHASE)
 
-    def _set_input_device(
-        self, sender: int | str, value: str, user_data=None
-    ) -> None:
+    def _set_input_device(self, sender: int | str, value: str, user_data=None) -> None:
         self.app.settings.input_device = self._input_device_ids[value]
         device = self.app._audio_service.selected_input_device
         channels = device.input_channels if device is not None else 0
-        self.app.settings.input_routing = (
-            self.app._audio_service.default_input_routing(channels)
+        if device is not None:
+            self.app.settings.input_block_size = max(
+                1,
+                int(round(device.sample_rate * 0.1)),
+            )
+            dpg.set_value(
+                self.input_block_size,
+                self.app.settings.input_block_size,
+            )
+        self.app.settings.input_routing = self.app._audio_service.default_input_routing(
+            channels
         )
         self._rebuild_input_routing()
 
-    def _set_output_device(
-        self, sender: int | str, value: str, user_data=None
-    ) -> None:
+    def _set_output_device(self, sender: int | str, value: str, user_data=None) -> None:
         self.app.settings.output_device = self._output_device_ids[value]
         device = self.app._audio_service.selected_output_device
         channels = device.output_channels if device is not None else 0
+        if device is not None:
+            self.app.settings.output_block_size = max(
+                1,
+                int(round(device.sample_rate * 0.1)),
+            )
+            dpg.set_value(
+                self.output_block_size,
+                self.app.settings.output_block_size,
+            )
         self.app.settings.output_routing = (
             self.app._audio_service.default_output_routing(channels)
         )

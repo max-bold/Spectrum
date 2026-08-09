@@ -6,7 +6,7 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 
 from audioanalysis import break_phase_wraps, phase_derivative, wrap_phase
-from spectrum_app.core.model import AxisSpec, GraphData, Measurement
+from spectrum_app.core.model import AxisSpec, GraphData, Measurement, PlotType
 from spectrum_app.core.plot_export import PlotExportError, PlotExporter
 
 if TYPE_CHECKING:
@@ -20,6 +20,8 @@ class Plot:
     WATERMARK_TOP_MARGIN = 20
     WATERMARK_COLOR = (180, 180, 180, 110)
     WATERMARK_SIZE = 15
+    BAR_COLOR = (70, 145, 215, 210)
+    BAR_FILL = (70, 145, 215, 140)
     WATERMARK_BLOCKING_ITEM_TYPES = {
         "mvAppItemType::mvWindowAppItem",
         "mvAppItemType::mvFileDialog",
@@ -43,6 +45,13 @@ class Plot:
             "app::plot::y_axis_3",
         ]
         self.series_tags: list[str] = []
+        self._series_layout: dict[str, tuple[int | str, PlotType]] = {}
+        self._bar_data: dict[
+            str,
+            tuple[np.ndarray, np.ndarray, int | str, float],
+        ] = {}
+        self._topology: tuple[tuple[str, AxisSpec, PlotType], ...] = ()
+        self._pending_axis_fits: set[AxisSpec] = set()
         self.axis_warning = "app::plot::axis_warning"
         self.axis_warning_text = "app::plot::axis_warning_text"
         self.export_dialog = "app::plot::export_dialog"
@@ -155,7 +164,13 @@ class Plot:
             except Exception:
                 self.app.app_state.graph_data_changed = True
                 raise
+        self._refresh_bar_baselines()
         self._update_watermark()
+
+    def request_axis_autoscale(self, axis_spec: AxisSpec) -> None:
+        """Fit an axis after its displayed data is updated on the next redraw."""
+        if any(spec == axis_spec for _, spec, _ in self._topology):
+            self._pending_axis_fits.add(axis_spec)
 
     def _update_watermark(self) -> None:
         if not self._built:
@@ -196,15 +211,11 @@ class Plot:
         dpg.set_axis_limits(self.x_axis, *self.app.settings.frequency_range)
         visible_graphs = list(self._visible_graphs())
         grouped_graphs = {
-            axis_spec: [
-                item for item in visible_graphs if item[1].y_axis == axis_spec
-            ]
+            axis_spec: [item for item in visible_graphs if item[1].y_axis == axis_spec]
             for axis_spec in self.AXIS_ORDER
         }
         visible_axis_specs = [
-            axis_spec
-            for axis_spec in self.AXIS_ORDER
-            if grouped_graphs[axis_spec]
+            axis_spec for axis_spec in self.AXIS_ORDER if grouped_graphs[axis_spec]
         ]
 
         unsupported_specs = {
@@ -222,9 +233,26 @@ class Plot:
 
         self._hide_axis_warning()
 
-        for series_tag in self.series_tags:
-            dpg.delete_item(series_tag)
-        self.series_tags.clear()
+        desired = [
+            (measurement, graph, visible_axis_specs.index(graph.y_axis))
+            for measurement, graph in visible_graphs
+        ]
+        topology = tuple(
+            (
+                graph.id,
+                graph.y_axis,
+                getattr(graph, "plot_type", PlotType.LINE),
+            )
+            for _, graph, _ in desired
+        )
+        topology_changed = topology != self._topology
+        desired_tags = {self._series_tag(graph.id) for _, graph, _ in desired}
+        for series_tag in list(self.series_tags):
+            if series_tag not in desired_tags:
+                dpg.delete_item(series_tag)
+                self.series_tags.remove(series_tag)
+                self._series_layout.pop(series_tag, None)
+                self._bar_data.pop(series_tag, None)
 
         for index, axis_tag in enumerate(self.y_axes):
             if index >= len(visible_axis_specs):
@@ -237,18 +265,174 @@ class Plot:
                 show=True,
                 label=self._axis_label(axis_spec),
                 scale=self._axis_scale(axis_spec),
+                opposite=index > 0,
+                no_side_switch=True,
             )
-            for measurement, graph in grouped_graphs[axis_spec]:
-                series_tag = self._series_tag(graph.id)
-                x, y = self._display_data(graph)
-                dpg.add_line_series(
-                    x.tolist(),
-                    y.tolist(),
-                    label=f"{measurement.name}: {graph.name}",
-                    tag=series_tag,
-                    parent=axis_tag,
-                )
+
+        for measurement, graph, axis_index in desired:
+            axis_tag = self.y_axes[axis_index]
+            series_tag = self._series_tag(graph.id)
+            x, y = self._display_data(graph)
+            label = f"{measurement.name}: {graph.name}"
+            plot_type = getattr(graph, "plot_type", PlotType.LINE)
+            layout = axis_tag, plot_type
+            if self._series_layout.get(series_tag) != layout:
+                if series_tag in self.series_tags:
+                    dpg.delete_item(series_tag)
+                    self.series_tags.remove(series_tag)
+                self._bar_data.pop(series_tag, None)
+                if plot_type == PlotType.BARS:
+                    self._add_bar_series(series_tag, axis_tag, label, x, y)
+                else:
+                    dpg.add_line_series(
+                        x.tolist(),
+                        y.tolist(),
+                        label=label,
+                        tag=series_tag,
+                        parent=axis_tag,
+                    )
                 self.series_tags.append(series_tag)
+                self._series_layout[series_tag] = layout
+            else:
+                dpg.set_item_label(series_tag, label)
+                if plot_type == PlotType.BARS:
+                    self._set_bar_data(series_tag, axis_tag, x, y)
+                else:
+                    dpg.set_value(series_tag, [x.tolist(), y.tolist()])
+
+        pending_axis_fits = self._pending_axis_fits
+        self._pending_axis_fits = set()
+        for index, axis_spec in enumerate(visible_axis_specs):
+            if topology_changed or axis_spec in pending_axis_fits:
+                dpg.fit_axis_data(self.y_axes[index])
+        self._topology = topology
+
+    def _add_bar_series(
+        self,
+        tag: str,
+        parent: int | str,
+        label: str,
+        x: np.ndarray,
+        y: np.ndarray,
+    ) -> None:
+        """Draw variable-width bars that remain even on a logarithmic X axis."""
+        top_x, top_y, baseline = self._bar_series_data(parent, x, y)
+        self._bar_data[tag] = (
+            top_x,
+            top_y,
+            parent,
+            float(baseline[0]) if len(baseline) else 0.0,
+        )
+        dpg.add_custom_series(
+            top_x.tolist(),
+            top_y.tolist(),
+            3,
+            y1=baseline.tolist(),
+            label=label,
+            tag=tag,
+            parent=parent,
+            callback=self._draw_bar_series,
+            tooltip=False,
+        )
+
+    def _set_bar_data(
+        self,
+        tag: str,
+        parent: int | str,
+        x: np.ndarray,
+        y: np.ndarray,
+    ) -> None:
+        top_x, top_y, baseline = self._bar_series_data(parent, x, y)
+        self._bar_data[tag] = (
+            top_x,
+            top_y,
+            parent,
+            float(baseline[0]) if len(baseline) else 0.0,
+        )
+        dpg.set_value(
+            tag,
+            [top_x.tolist(), top_y.tolist(), baseline.tolist()],
+        )
+
+    def _bar_series_data(
+        self,
+        parent: int | str,
+        x: np.ndarray,
+        y: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        left, right = self._log_bar_edges(x)
+        top_x = np.column_stack((left, right)).reshape(-1)
+        top_y = np.repeat(np.asarray(y, dtype=np.float64), 2)
+        lower = self._axis_lower_limit(parent, top_y)
+        baseline = np.full_like(top_y, lower)
+        return top_x, top_y, baseline
+
+    def _draw_bar_series(self, sender, app_data, user_data=None) -> None:
+        if len(app_data) < 4:
+            return
+        transformed_x = app_data[1]
+        transformed_y = app_data[2]
+        transformed_baseline = app_data[3]
+        dpg.delete_item(sender, children_only=True, slot=2)
+        dpg.push_container_stack(sender)
+        try:
+            for index in range(0, len(transformed_x) - 1, 2):
+                left = float(transformed_x[index]) + 1.5
+                right = float(transformed_x[index + 1]) - 1.5
+                if right < left:
+                    left = right = (left + right) / 2.0
+                dpg.draw_rectangle(
+                    (left, transformed_y[index]),
+                    (right, transformed_baseline[index + 1]),
+                    color=self.BAR_COLOR,
+                    fill=self.BAR_FILL,
+                )
+        finally:
+            dpg.pop_container_stack()
+
+    def _refresh_bar_baselines(self) -> None:
+        for tag, (top_x, top_y, axis_tag, previous) in list(self._bar_data.items()):
+            if tag not in self.series_tags:
+                self._bar_data.pop(tag, None)
+                continue
+            lower = self._axis_lower_limit(axis_tag, top_y)
+            if np.isclose(lower, previous, rtol=1e-9, atol=1e-12):
+                continue
+            self._bar_data[tag] = top_x, top_y, axis_tag, lower
+            dpg.set_value(
+                tag,
+                [
+                    top_x.tolist(),
+                    top_y.tolist(),
+                    np.full_like(top_y, lower).tolist(),
+                ],
+            )
+
+    @staticmethod
+    def _axis_lower_limit(axis_tag: int | str, y: np.ndarray) -> float:
+        try:
+            lower, _ = dpg.get_axis_limits(axis_tag)
+            if np.isfinite(lower):
+                return float(lower)
+        except (AttributeError, SystemError, TypeError, ValueError):
+            pass
+        finite = np.asarray(y, dtype=np.float64)
+        finite = finite[np.isfinite(finite)]
+        return float(np.min(finite)) if finite.size else 0.0
+
+    @staticmethod
+    def _log_bar_edges(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        centers = np.asarray(x, dtype=np.float64)
+        if centers.ndim != 1 or not len(centers):
+            return np.empty(0), np.empty(0)
+        if np.any(centers <= 0.0) or np.any(np.diff(centers) <= 0.0):
+            raise ValueError("Bar frequencies must be positive and increasing")
+        if len(centers) == 1:
+            return centers / np.sqrt(2.0), centers * np.sqrt(2.0)
+        boundaries = np.sqrt(centers[:-1] * centers[1:])
+        left = np.concatenate(([centers[0] ** 2 / boundaries[0]], boundaries))
+        right = np.concatenate((boundaries, [centers[-1] ** 2 / boundaries[-1]]))
+        return left, right
 
     def _display_data(self, graph: GraphData) -> tuple[np.ndarray, np.ndarray]:
         if graph.y_axis != AxisSpec.PHASE:

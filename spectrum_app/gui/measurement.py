@@ -10,6 +10,9 @@ if TYPE_CHECKING:
 
 
 class MeasurementPanel:
+    CONFIRM_WIDTH = 440
+    CONFIRM_HEIGHT = 150
+
     def __init__(self, app: "SpectrumApplication") -> None:
         self.app = app
         self.run_button = "app::measurement::run"
@@ -17,6 +20,8 @@ class MeasurementPanel:
         self.module_gui_host = "app::module_gui_host"
         self.green_button_theme = "app::measurement::green_button_theme"
         self.red_button_theme = "app::measurement::red_button_theme"
+        self.module_change_dialog = "app::measurement::module_change_dialog"
+        self.module_change_text = "app::measurement::module_change_text"
         self._shown_measurement_id: str | None = None
         self._shown_module_id: str | None = None
         self._shown_measuring: bool | None = None
@@ -27,6 +32,7 @@ class MeasurementPanel:
         self._modules_ready = False
         self._active_module: BaseModule | None = None
         self._active_module_measurement_id: str | None = None
+        self._pending_module_change: tuple[str, str] | None = None
 
     def build(self) -> None:
         self._build_themes()
@@ -50,6 +56,36 @@ class MeasurementPanel:
         ):
             pass
         self.update(force=True)
+
+    def build_dialogs(self) -> None:
+        with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
+            label="Change measurement module",
+            tag=self.module_change_dialog,
+            width=self.CONFIRM_WIDTH,
+            height=self.CONFIRM_HEIGHT,
+            show=False,
+            modal=True,
+            no_resize=True,
+            no_collapse=True,
+            on_close=self._cancel_module_change,
+        ):
+            dpg.add_text(
+                "Changing the module will permanently delete the existing "
+                "measurement data. Continue?",
+                tag=self.module_change_text,
+                wrap=self.CONFIRM_WIDTH - 30,
+            )
+            with dpg.group(horizontal=True):  # pyright: ignore[reportGeneralTypeIssues]
+                dpg.add_button(
+                    label="Change module",
+                    callback=self._confirm_module_change,
+                    width=200,
+                )
+                dpg.add_button(
+                    label="Cancel",
+                    callback=self._cancel_module_change,
+                    width=200,
+                )
 
     def modules_initialized(self) -> None:
         self._modules_ready = True
@@ -167,17 +203,84 @@ class MeasurementPanel:
             module_id = self._module_ids_by_name[module_name]
             if measurement.module_id == module_id:
                 return
-            removed_graph_ids = {graph.id for graph in measurement.graphs}
-            self.app.app_state.visible_graph_ids = [
-                graph_id
-                for graph_id in self.app.app_state.visible_graph_ids
-                if graph_id not in removed_graph_ids
-            ]
-            measurement.module_id = module_id
-            measurement.module_state.clear()
-            measurement.graphs.clear()
-            self.app.app_state.graph_data_changed = True
-            self.update()
+            if self._has_measurement_data(measurement):
+                self._pending_module_change = measurement.id, module_id
+                dpg.set_value(
+                    self.module_combo,
+                    self._module_name(measurement.module_id),
+                )
+                self._center_module_change_dialog()
+                dpg.configure_item(self.module_change_dialog, show=True)
+                return
+            self._apply_module_change(measurement, module_id)
+
+    def _confirm_module_change(
+        self, sender=None, app_data=None, user_data=None
+    ) -> None:
+        pending = self._pending_module_change
+        self._pending_module_change = None
+        dpg.configure_item(self.module_change_dialog, show=False)
+        if pending is None:
+            return
+        measurement_id, module_id = pending
+        measurement = next(
+            (
+                item
+                for item in self.app.app_state.measurements
+                if item.id == measurement_id
+            ),
+            None,
+        )
+        if measurement is not None:
+            self._apply_module_change(measurement, module_id)
+
+    def _cancel_module_change(self, sender=None, app_data=None, user_data=None) -> None:
+        self._pending_module_change = None
+        dpg.configure_item(self.module_change_dialog, show=False)
+        measurement = self._active_measurement()
+        if measurement is not None:
+            dpg.set_value(
+                self.module_combo,
+                self._module_name(measurement.module_id),
+            )
+
+    def _apply_module_change(
+        self,
+        measurement: Measurement,
+        module_id: str,
+    ) -> None:
+        removed_graph_ids = {graph.id for graph in measurement.graphs}
+        self.app.app_state.visible_graph_ids = [
+            graph_id
+            for graph_id in self.app.app_state.visible_graph_ids
+            if graph_id not in removed_graph_ids
+        ]
+        measurement.module_id = module_id
+        measurement.module_state.clear()
+        measurement.graphs.clear()
+        self.app.app_state.graph_data_changed = True
+        self.update(force=True)
+
+    @staticmethod
+    def _has_measurement_data(measurement: Measurement) -> bool:
+        if measurement.graphs:
+            return True
+        data_markers = ("recording", "generator", "result", "calibration")
+        return any(
+            value is not None and any(marker in key for marker in data_markers)
+            for key, value in measurement.module_state.items()
+        )
+
+    def _center_module_change_dialog(self) -> None:
+        main_position = dpg.get_item_pos(self.app.main_window.tag)
+        main_size = dpg.get_item_rect_size(self.app.main_window.tag)
+        dpg.set_item_pos(
+            self.module_change_dialog,
+            [
+                main_position[0] + (main_size[0] - self.CONFIRM_WIDTH) / 2,
+                main_position[1] + (main_size[1] - self.CONFIRM_HEIGHT) / 2,
+            ],
+        )
 
     def _module_name(self, module_id: str) -> str:
         try:
@@ -191,10 +294,8 @@ class MeasurementPanel:
             if measurement is not None
             else None
         )
-        if (
-            module is self._active_module
-            and self._active_module_measurement_id
-            == (measurement.id if measurement is not None else None)
+        if module is self._active_module and self._active_module_measurement_id == (
+            measurement.id if measurement is not None else None
         ):
             return
 

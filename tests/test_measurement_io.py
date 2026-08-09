@@ -13,7 +13,7 @@ from spectrum_app.core.measurement_io import (
     load_measurement,
     save_measurement,
 )
-from spectrum_app.core.model import AxisSpec, GraphData, Measurement
+from spectrum_app.core.model import AxisSpec, GraphData, Measurement, PlotType
 
 
 class MeasurementIOTests(unittest.TestCase):
@@ -31,6 +31,7 @@ class MeasurementIOTests(unittest.TestCase):
             np.array([0.1, 0.2, 0.3]),
             AxisSpec.FREQ,
             AxisSpec.THD,
+            plot_type=PlotType.BARS,
         )
         measurement = Measurement(
             module_id="thd",
@@ -78,6 +79,7 @@ class MeasurementIOTests(unittest.TestCase):
         self.assertEqual(loaded.module_state["$bmm"], "ordinary module value")
         np.testing.assert_array_equal(loaded.graphs[0].x, graph.x)
         np.testing.assert_array_equal(loaded.graphs[0].y, graph.y)
+        self.assertEqual(loaded.graphs[0].plot_type, PlotType.BARS)
 
     def test_invalid_measurement_document_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:

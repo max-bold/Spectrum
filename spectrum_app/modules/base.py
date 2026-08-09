@@ -50,7 +50,7 @@ class BaseModule(ABC):
 
     @abstractmethod
     def stop_measurement(self) -> None:
-        """Request interruption of the current measurement."""
+        """Request cooperative cancellation; the module owns audio cleanup."""
 
     @abstractmethod
     def deactivate(self) -> None:

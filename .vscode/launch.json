@@ -23,7 +23,7 @@
             "name": "BM Spectrum (dev)",
             "type": "debugpy",
             "request": "launch",
-            "module": "spectrum_app.application",
+            "module": "spectrum_app",
             "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
             "env": {

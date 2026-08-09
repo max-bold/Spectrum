@@ -298,12 +298,29 @@ class ASignal:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class FrequencyBand:
     """Frequency range in hertz."""
 
-    low: float = 20.0
-    high: float = 20_000.0
+    low: float
+    high: float
+
+    def __init__(
+        self,
+        low: float | tuple[float, float] = 20.0,
+        high: float | None = None,
+    ) -> None:
+        if isinstance(low, tuple):
+            if high is not None:
+                raise TypeError("High frequency must be omitted when low is a tuple")
+            if len(low) != 2:
+                raise ValueError("Frequency band tuple must contain two values")
+            low_value, high_value = low
+        else:
+            low_value = low
+            high_value = 20_000.0 if high is None else high
+        object.__setattr__(self, "low", float(low_value))
+        object.__setattr__(self, "high", float(high_value))
 
     def validate(self, *, nyquist: float | None = None) -> None:
         if self.low <= 0:

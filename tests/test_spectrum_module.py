@@ -19,7 +19,7 @@ from tests.test_dpg_lifecycle import FakeDpgBackend
 
 class FakeAudioInput:
     sample_rate = 8_000
-    block_size = 256
+    blocksize = 256
 
     def __init__(self) -> None:
         self.position = 0
@@ -33,7 +33,7 @@ class FakeAudioInput:
         time.sleep(0.002)
         indexes = np.arange(self.position, self.position + samples)
         self.position += samples
-        signal = np.sin(2 * np.pi * 1_000 * indexes / self.sample_rate)
+        signal = 0.5 * np.sin(2 * np.pi * 1_000 * indexes / self.sample_rate)
         return np.column_stack((signal, signal)).astype(np.float32)
 
     def close(self) -> bool:
@@ -42,7 +42,7 @@ class FakeAudioInput:
 
 class FakeAudioOutput:
     sample_rate = 8_000
-    block_size = 256
+    blocksize = 256
 
     def __init__(self) -> None:
         self.thread_names: set[str] = set()

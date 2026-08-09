@@ -156,14 +156,14 @@ class THDModule(BaseModule):
         except Exception as error:
             self.app.app_state.measuring = False
             self._set_controls_enabled(True)
-            self._set_status(f"THD error: {error}")
+            self._show_error(str(error))
 
     def stop_measurement(self) -> None:
         acquisition = self._acquisition
         if acquisition is not None and acquisition.is_alive():
             self._stop_requested = True
             self._set_status("Stopping THD measurement...")
-            acquisition.stop()
+            acquisition.request_stop()
             return
         if self._finishing_revision is not None:
             self._invalidate_analysis()
@@ -191,10 +191,8 @@ class THDModule(BaseModule):
         self._capture_revision += 1
         acquisition = self._acquisition
         if acquisition is not None and acquisition.is_alive():
-            acquisition.stop()
-            acquisition.join(timeout=2.0)
-        self.app.audio_input.close()
-        self.app.audio_output.close()
+            acquisition.request_stop()
+            acquisition.join()
         self.app.app_state.measuring = False
         self._acquisition = None
         self._invalidate_analysis()
@@ -209,8 +207,8 @@ class THDModule(BaseModule):
     def shutdown(self) -> None:
         acquisition = self._acquisition
         if acquisition is not None and acquisition.is_alive():
-            acquisition.stop()
-            acquisition.join(timeout=2.0)
+            acquisition.request_stop()
+            acquisition.join()
         if self._analyzer is not None:
             self._analyzer.shutdown()
             self._analyzer = None
@@ -349,18 +347,18 @@ class THDModule(BaseModule):
         if error is not None or recording is None or generator is None:
             self.app.app_state.measuring = False
             self._set_controls_enabled(True)
-            self._set_status(f"THD error: {error or 'Audio recording is empty'}")
+            self._show_error(error or "Audio recording is empty")
             return
         peak = float(recording.max()[0])
         if peak >= 0.999:
             self.app.app_state.measuring = False
             self._set_controls_enabled(True)
-            self._set_status("THD error: clipping detected on input A")
+            self._show_error("Input clipping detected on channel A")
             return
         if peak < 1e-4:
             self.app.app_state.measuring = False
             self._set_controls_enabled(True)
-            self._set_status("THD error: input A signal is too quiet")
+            self._show_error("Input A signal is too quiet")
             return
 
         state = measurement.module_state
@@ -383,7 +381,7 @@ class THDModule(BaseModule):
             config = self._build_config(recording.sample_rate)
             config.validate()
         except Exception as error:
-            self._set_status(f"THD error: {error}")
+            self._show_error(str(error))
             if finishing:
                 self.app.app_state.measuring = False
                 self._set_controls_enabled(True)
@@ -434,7 +432,7 @@ class THDModule(BaseModule):
         measurement = self._analysis_measurement
         if measurement is not None and measurement is self._active_measurement():
             if error is not None or result is None or mask_fit is None:
-                self._set_status(f"THD error: {error or 'Calculation failed'}")
+                self._show_error(error or "Calculation failed")
             else:
                 state = measurement.module_state
                 state["result_frequency"] = result.frequency
@@ -612,6 +610,14 @@ class THDModule(BaseModule):
         if measurement is not None:
             measurement.module_state["status"] = text
         self.app.main_window.set_status_text(text)
+
+    def _show_error(self, message: str) -> None:
+        clipping = "clipping" in message.lower()
+        self._set_status("THD+N stopped: clipping" if clipping else "THD+N failed")
+        self.app.main_window.show_error(
+            "THD+N clipping" if clipping else "THD+N error",
+            message,
+        )
 
     @classmethod
     def _ensure_state(cls, state: dict[str, Any]) -> None:

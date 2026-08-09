@@ -142,7 +142,7 @@ class AudioServiceTests(unittest.TestCase):
             {device.name for device in self.service.output_devices},
         )
 
-    def test_stream_uses_device_defaults_and_recommended_block_is_metadata(self) -> None:
+    def test_stream_uses_device_defaults_and_exact_blocksize(self) -> None:
         self.settings.input_block_size = 4096
 
         self.assertTrue(self.audio_input.open())
@@ -151,14 +151,18 @@ class AudioServiceTests(unittest.TestCase):
         self.assertEqual(stream.config["device"], 0)
         self.assertEqual(stream.config["samplerate"], 48_000)
         self.assertEqual(stream.config["channels"], 2)
-        self.assertEqual(stream.config["blocksize"], 0)
-        self.assertEqual(self.audio_input.block_size, 4096)
+        self.assertEqual(stream.config["blocksize"], 4096)
+        self.assertEqual(self.audio_input.blocksize, 4096)
 
-        data = self.audio_input.read(37)
-        self.assertEqual(data.shape, (37, 2))
+        data = self.audio_input.read(4096)
+        self.assertEqual(data.shape, (4096, 2))
         np.testing.assert_array_equal(data[0], [1.0, 2.0])
 
+        with self.assertRaises(AttributeError):
+            self.audio_input.blocksize = 37  # type: ignore[misc]
+
     def test_input_routing_maps_physical_channels_to_logical_a_and_b(self) -> None:
+        self.settings.input_block_size = 4
         self.settings.input_routing = (1, 0)
         self.assertTrue(self.audio_input.open())
 
@@ -167,6 +171,7 @@ class AudioServiceTests(unittest.TestCase):
         np.testing.assert_array_equal(data[0], [2.0, 1.0])
 
     def test_mono_input_is_duplicated_to_a_and_b_by_default(self) -> None:
+        self.settings.input_block_size = 4
         self.settings.input_device = self.service.input_devices[1].id
         self.assertTrue(self.audio_input.open())
 
@@ -185,7 +190,8 @@ class AudioServiceTests(unittest.TestCase):
         self.service._refresh_devices()
         self.assertEqual(self.backend.terminate_calls, refreshes + 1)
 
-    def test_output_accepts_arbitrary_array_lengths(self) -> None:
+    def test_output_accepts_exact_blocksize(self) -> None:
+        self.settings.output_block_size = 13
         self.assertTrue(self.audio_output.open())
 
         self.audio_output.write(np.ones(13, dtype=np.float64))
@@ -199,6 +205,7 @@ class AudioServiceTests(unittest.TestCase):
         )
 
     def test_output_routing_can_disable_a_physical_channel(self) -> None:
+        self.settings.output_block_size = 5
         self.settings.output_routing = (False, True)
         self.assertTrue(self.audio_output.open())
 
@@ -209,6 +216,7 @@ class AudioServiceTests(unittest.TestCase):
         np.testing.assert_array_equal(written[:, 1], 1.0)
 
     def test_default_output_routing_fans_mono_to_every_device_channel(self) -> None:
+        self.settings.output_block_size = 5
         self.backend.devices[1]["max_output_channels"] = 4
         self.service._refresh_devices()
         self.assertTrue(self.audio_output.open())
@@ -224,6 +232,7 @@ class AudioServiceTests(unittest.TestCase):
             )
 
     def test_output_rejects_non_mono_module_data(self) -> None:
+        self.settings.output_block_size = 5
         self.assertTrue(self.audio_output.open())
 
         with self.assertRaisesRegex(AudioError, "one-dimensional mono"):
@@ -232,6 +241,7 @@ class AudioServiceTests(unittest.TestCase):
         self.assertTrue(self.backend.output_streams[-1].closed)
 
     def test_stream_error_closes_the_session_and_raises_audio_error(self) -> None:
+        self.settings.input_block_size = 16
         self.assertTrue(self.audio_input.open())
         stream = self.backend.input_streams[-1]
         stream.overflow = True
@@ -241,6 +251,24 @@ class AudioServiceTests(unittest.TestCase):
 
         self.assertTrue(stream.closed)
         self.assertTrue(self.audio_input.close())
+
+    def test_input_rejects_a_non_blocksize_read(self) -> None:
+        self.settings.input_block_size = 16
+        self.assertTrue(self.audio_input.open())
+
+        with self.assertRaisesRegex(AudioError, "must equal blocksize 16"):
+            self.audio_input.read(15)
+
+        self.assertTrue(self.backend.input_streams[-1].closed)
+
+    def test_output_rejects_a_non_blocksize_write(self) -> None:
+        self.settings.output_block_size = 16
+        self.assertTrue(self.audio_output.open())
+
+        with self.assertRaisesRegex(AudioError, "must equal blocksize 16"):
+            self.audio_output.write(np.ones(15, dtype=np.float32))
+
+        self.assertTrue(self.backend.output_streams[-1].closed)
 
     def test_shutdown_closes_every_open_stream(self) -> None:
         self.assertTrue(self.audio_input.open())

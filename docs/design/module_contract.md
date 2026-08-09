@@ -154,9 +154,17 @@ not create a second acquisition.
 `stop_measurement()` requests cooperative cancellation and returns quickly. It
 must be safe when no worker is running and safe when called repeatedly.
 
-For a blocking audio worker, setting an event alone is insufficient: the
-module must also close the streams it opened so a blocked `read()` or `write()`
-can return. Cleanup must not depend on another audio block arriving.
+The GUI only calls `module.stop_measurement()`. It must never close
+`app.audio_input` or `app.audio_output` on behalf of a module.
+
+Normal STOP is cooperative: `stop_measurement()` sets the worker's cancellation
+event and returns. It must not close a native stream while another thread is
+inside blocking `read()` or `write()`. The current transfer finishes within one
+configured audio block, both I/O loops observe the event, and the module's audio
+worker then closes the streams itself.
+
+An emergency abort after a bounded shutdown timeout is a separate failure path;
+it must not be used for normal STOP.
 
 ### `update()`
 
@@ -183,8 +191,8 @@ The safe order is:
 
 1. invalidate the current operation revision;
 2. request cancellation;
-3. close input and output streams;
-4. join owned acquisition threads with a bounded timeout;
+3. join owned acquisition threads after their current audio blocks finish;
+4. let the owning audio worker close input and output streams;
 5. clear pending messages and worker references;
 6. clear `app.app_state.measuring`;
 7. destroy the view and activation-scoped menu items;
@@ -252,30 +260,46 @@ app.audio_input.open() -> bool
 app.audio_input.read(samples) -> ndarray
 app.audio_input.close() -> bool
 app.audio_input.sample_rate
-app.audio_input.block_size
+app.audio_input.blocksize
 
 app.audio_output.open() -> bool
 app.audio_output.write(data)
 app.audio_output.close() -> bool
 app.audio_output.sample_rate
-app.audio_output.block_size
+app.audio_output.blocksize
 ```
 
 A module must never import `sounddevice`, create a PortAudio stream, choose a
 device, refresh devices, or pass SoundDevice-specific stream parameters.
 
-`sample_rate` is the read-only default of the selected device and is available
-before `open()`. `block_size` is the user's recommended transfer size. It is
-not a requirement that all module reads and writes use exactly that size.
+`sample_rate` and `blocksize` are read-only module-facing properties.
+`blocksize` is the exact transfer size used to open the native SoundDevice
+stream, not a recommendation. A module **MUST** call
+`AudioInput.read(app.audio_input.blocksize)` and **MUST** pass an array of
+exactly `app.audio_output.blocksize` samples to every `AudioOutput.write()`.
+The core validates this rule and closes the offending stream on a mismatch.
+
+Never shorten the final input read to the number of samples still required.
+Read one complete block and keep only the required prefix in the recording.
+Never send a short final output write. Pad the final mono block with zeros to
+`AudioOutput.blocksize`. Streaming/looping generators must also assemble every
+write as one complete block, wrapping their source data inside the block when
+necessary.
+
+This equality is required by the blocking PortAudio path. In particular,
+opening a WASAPI stream with a host-selected block size and then requesting a
+different transfer size can produce discontinuous input without reporting an
+overflow. Application settings may choose the block size, but a module may not
+override it.
 
 The application exposes logical audio rather than the physical channel layout:
 
 - `AudioInput.read()` always returns a two-dimensional array shaped
-  `(samples, 2)`. Its columns are logical input channels A and B. Application
+  `(blocksize, 2)`. Its columns are logical input channels A and B. Application
   settings route one physical input to each logical channel. The same physical
   input may feed both A and B; an unassigned logical input contains zeros.
 - `AudioOutput.write()` accepts only a one-dimensional mono array shaped
-  `(samples,)`. All module generators are mono. Application settings fan that
+  `(blocksize,)`. All module generators are mono. Application settings fan that
   signal out to any number of physical outputs; enabled outputs receive the
   same samples and disabled outputs remain silent.
 
@@ -322,6 +346,8 @@ completion message.
 Output data must remain one-dimensional and mono. Input workers receive exactly
 two logical channels and should preserve both unless the measurement explicitly
 needs only one. Recorded signals must preserve the sample rate in `ASignal`.
+Both input and output loops must use their direction's read-only `blocksize` for
+every transfer; input and output block sizes are allowed to differ.
 
 ### Audio-worker cleanup pattern
 
@@ -344,15 +370,21 @@ def run(self) -> None:
     finally:
         cancelled = self.cancel_event.is_set()
         self.cancel_event.set()
+        self._join_child_workers()
         self.audio_output.close()
         self.audio_input.close()
-        self._join_child_workers()
         self.on_complete(recording, error, cancelled)
 ```
 
 The callback is invoked once, including on cancellation and partial-open
 failure. Closing both directions is harmless because core close operations are
 idempotent.
+
+The ordering is mandatory: first stop and join every child that can still be
+inside `AudioOutput.write()`, then close output. Input is closed only after the
+coordinator has returned from its final `AudioInput.read()`. Calling `close()`
+from `stop_measurement()` or from the GUI thread creates a native PortAudio race
+and can terminate the whole process without a Python exception.
 
 ## Heavy-calculation contract
 
@@ -481,8 +513,10 @@ app.app_state.graph_data_changed = True
 ```
 
 The shared plot owns axes, scale selection, phase wrapping, and rendering. A
-module supplies raw series and semantic `AxisSpec` values. It must not reach
-into the shared plot and create DPG series directly.
+module supplies raw series, semantic `AxisSpec` values, and an optional
+`PlotType` (`LINE` by default or `BARS`). It must not reach into the shared plot
+and create DPG series directly. Application settings such as RTA `auto` mode
+must be resolved to a concrete `PlotType` before publication.
 
 Prefer updating existing `GraphData` objects so their IDs and visibility remain
 stable across recalculation. When graphs are removed, remove their IDs from
@@ -490,7 +524,22 @@ stable across recalculation. When graphs are removed, remove their IDs from
 
 ## Errors and cancellation
 
-Expected operational failures should become concise user-facing status text.
+Expected operational failures must produce both a concise status and a modal
+error dialog containing the useful diagnostic text. Modules show dialogs only
+from `update()` or another UI-thread method through
+`app.main_window.show_error(title, message)`. In particular, an Impedance
+calibration error uses the status `Calibration failed`; its detailed diagnostics
+belong in the popup. Any calibration error invalidates all intermediate
+calibration data, resets the workflow to `uncalibrated`, and makes the next
+calibration attempt start from Stage 1.
+
+Every acquisition worker must inspect each input block for clipping at the
+shared application threshold. On the first clipped block it stops acquisition,
+cooperatively terminates output, closes its streams, and reports the affected
+logical channel in an error popup. Do not wait until whole-record analysis to
+detect clipping. Generators that can exceed full scale must apply the same rule
+to output instead of silently clipping and continuing.
+
 Preserve the exception for tests or diagnostics when useful, but never let a
 worker exception silently terminate a thread.
 
@@ -529,7 +578,8 @@ Before considering a module complete, verify:
 - [ ] `module_state` contains no runtime objects.
 - [ ] `start_measurement()` returns immediately.
 - [ ] `stop_measurement()`, `deactivate()`, and `shutdown()` are idempotent.
-- [ ] Blocking audio calls are unblocked by closing streams during stop.
+- [ ] Normal STOP never closes a stream concurrently with blocking I/O.
+- [ ] Audio workers close their streams after all I/O loops have stopped.
 - [ ] Partial audio-open failure closes the other direction.
 - [ ] Success, failure, cancellation, and deactivation all clear measuring
       state correctly.

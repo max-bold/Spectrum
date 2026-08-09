@@ -55,9 +55,9 @@
   abstract application-level interface.
 - Modules use `app.audio_input` and `app.audio_output`; SoundDevice streams and
   device discovery remain private to the core.
-- Audio sample rate and channel count are read-only device defaults available
-  immediately after device selection. Block size is a user recommendation, not
-  a restriction on module reads and writes.
+- Audio sample rate is the read-only device default available immediately after
+  device selection. Block size is read-only and is the exact size required for
+  every module read and write.
 - Audio-device discovery supports hot plugging. PortAudio refresh is suspended
   while any application audio stream is open and resumes after the last stream
   closes.
@@ -72,8 +72,10 @@
   single-latest-snapshot slot, so delayed calculations cannot build a backlog.
 - The Impedance module keeps its generated signals, raw two-channel recordings,
   calibration results, and calculated complex impedance in
-  `Measurement.module_state`. Filtering changes recalculate every calibration
-  stage and the result from those recordings without a new capture.
+  `Measurement.module_state`. Smoothing changes reuse the Stage 1 channel
+  correction and recalculate Stage 2 and the result from stored recordings.
+  Changing the point count only interpolates Stage 1 onto the new frequency
+  grid; it never reanalyzes the Stage 1 recording.
 - Impedance exposes its experimental SPICE fit only while the module is active.
   The fit runs outside the UI thread and is explicitly marked as needing tests.
 - THD+N uses a fixed-level `0.9` logarithmic sweep and records logical input A.
@@ -89,12 +91,29 @@
 - Phase measures logical input A relative to electrical reference B using a
   fixed-level `0.9` logarithmic sweep. Audio capture and playback use separate
   workers, and transfer-function analysis uses a third worker. The module
-  publishes only unwrapped phase as shared `GraphData`; its compact response
-  plot, fitted delay, raw recording, and generator remain in `module_state`.
-- Phase delay is fitted within a user-selected subrange of the measurement
-  band. A manual distance correction is converted with 343 m/s and added to
-  the fitted delay before compensation. Phase wrapping and degrees-per-decade
-  conversion remain responsibilities of the shared plot.
+  publishes only unwrapped phase as shared `GraphData`; its compact two-channel
+  level history, fitted delay, raw recording, and generator remain in
+  `module_state`.
+- Phase delay is fitted across the selected measurement band. The fitted
+  distance initially becomes the total distance correction and can then be
+  edited by the user. Phase wrapping and degrees-per-decade conversion remain
+  responsibilities of the shared plot.
+- RTA continuously captures a rolling input window and publishes a new
+  periodogram after every hop. Pink-noise generation, blocking audio I/O, and
+  analysis are isolated in three workers; generator and analyzer handoffs use
+  bounded single-item slots so stale work cannot accumulate.
+- RTA noise starts with silence and uses sample-indexed fade-in/fade-out
+  envelopes that may span any number of audio blocks. Its level control is a
+  post-filter relative gain; output clipping stops the measurement and is reported
+  to the user.
+- RTA compensates periodogram density for equal logarithmic band width. Point
+  count and smoothing width remain editable during capture and are published
+  atomically to the analyzer for its next snapshot.
+- `GraphData.plot_type` lets a module request either a line or bars without
+  creating DPG objects itself. The shared plot renders RTA bars with geometric
+  band edges so their widths remain correct on the logarithmic frequency axis.
+  Plot series persist by `GraphData.id`; ordinary updates replace only their
+  values, while topology changes trigger Y-axis fitting.
 - Export commands share the extensible `File -> Export` submenu. Plot PNG
   export captures the Dear PyGui framebuffer and crops the rendered plot with
   HiDPI scaling; it does not rebuild the graph through Matplotlib.

@@ -14,7 +14,7 @@ import zlib
 import numpy as np
 
 from audioanalysis import ASignal
-from spectrum_app.core.model import AxisSpec, GraphData, Measurement
+from spectrum_app.core.model import AxisSpec, GraphData, Measurement, PlotType
 
 
 MEASUREMENT_EXTENSION = ".bmm"
@@ -122,6 +122,7 @@ def _encode_graph(graph: GraphData) -> dict[str, Any]:
         "y": _encode_array(graph.y),
         "x_axis": graph.x_axis.value,
         "y_axis": graph.y_axis.value,
+        "plot_type": getattr(graph, "plot_type", PlotType.LINE).value,
     }
 
 
@@ -138,6 +139,7 @@ def _decode_graph(value: object) -> GraphData:
     try:
         x_axis = AxisSpec(value.get("x_axis"))
         y_axis = AxisSpec(value.get("y_axis"))
+        plot_type = PlotType(value.get("plot_type", PlotType.LINE.value))
     except (TypeError, ValueError) as error:
         raise ValueError("graph axis is invalid") from error
     return GraphData(
@@ -146,6 +148,7 @@ def _decode_graph(value: object) -> GraphData:
         y=y,
         x_axis=x_axis,
         y_axis=y_axis,
+        plot_type=plot_type,
     )
 
 

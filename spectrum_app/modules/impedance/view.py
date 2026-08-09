@@ -13,6 +13,10 @@ class ImpedanceView:
     ROOT = "module::impedance::controls"
     BOTTOM = "module::impedance::bottom"
     LEVEL_METER = "module::impedance::level_meter"
+    WINDOW_WIDTH = "module::impedance::window_width"
+    WINDOW_WIDTH_HANDLERS = "module::impedance::window_width::handlers"
+    POINTS = "module::impedance::points"
+    POINTS_HANDLERS = "module::impedance::points::handlers"
     CALIBRATION_DIALOG = "module::impedance::calibration"
     CALIBRATION_TEXT = "module::impedance::calibration::text"
     CALIBRATION_RESISTORS = "module::impedance::calibration::resistors"
@@ -75,18 +79,40 @@ class ImpedanceView:
                 )
                 dpg.add_text("Window width, octaves")
                 dpg.add_input_float(
+                    tag=self.WINDOW_WIDTH,
                     default_value=state["window_width"],
                     step=0.1,
                     width=-1,
                     callback=self._set_window_width,
+                    on_enter=True,
                 )
                 dpg.add_text("Points")
                 dpg.add_input_int(
+                    tag=self.POINTS,
                     default_value=state["points"],
                     step=0,
                     width=-1,
                     callback=self._set_points,
+                    on_enter=True,
                 )
+
+        with dpg.item_handler_registry(  # pyright: ignore[reportGeneralTypeIssues]
+            tag=self.WINDOW_WIDTH_HANDLERS,
+        ):
+            dpg.add_item_deactivated_after_edit_handler(
+                callback=self._commit_window_width,
+            )
+        dpg.bind_item_handler_registry(
+            self.WINDOW_WIDTH,
+            self.WINDOW_WIDTH_HANDLERS,
+        )
+        with dpg.item_handler_registry(  # pyright: ignore[reportGeneralTypeIssues]
+            tag=self.POINTS_HANDLERS,
+        ):
+            dpg.add_item_deactivated_after_edit_handler(
+                callback=self._commit_points,
+            )
+        dpg.bind_item_handler_registry(self.POINTS, self.POINTS_HANDLERS)
 
         with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
             parent=bottom_parent,
@@ -186,6 +212,8 @@ class ImpedanceView:
             self.CALIBRATE_ITEM,
             self.TEST_TONE_ITEM,
             self.TOOLS_ITEM,
+            self.WINDOW_WIDTH_HANDLERS,
+            self.POINTS_HANDLERS,
         ):
             if dpg.does_item_exist(item):
                 dpg.delete_item(item)
@@ -300,3 +328,12 @@ class ImpedanceView:
     def _set_points(self, sender: int | str, value: int, user_data=None) -> None:
         value = self.module.set_setting("points", value)
         dpg.set_value(sender, value)
+
+    def _commit_window_width(self, sender=None, app_data=None, user_data=None) -> None:
+        self._set_window_width(
+            self.WINDOW_WIDTH,
+            dpg.get_value(self.WINDOW_WIDTH),
+        )
+
+    def _commit_points(self, sender=None, app_data=None, user_data=None) -> None:
+        self._set_points(self.POINTS, dpg.get_value(self.POINTS))

@@ -15,6 +15,7 @@ from spectrum_app.core.settings import (
 
 
 AudioDirection = Literal["input", "output"]
+CLIPPING_THRESHOLD = 0.999
 
 
 class AudioError(RuntimeError):
@@ -66,6 +67,7 @@ class AudioService:
         self._refreshing = False
         self._active_sessions = 0
         self._streams: dict[AudioDirection, Any] = {}
+        self._stream_blocksizes: dict[AudioDirection, int] = {}
         self._stream_routing: dict[
             AudioDirection,
             InputRouting | OutputRouting,
@@ -204,6 +206,7 @@ class AudioService:
                 native_channels = (
                     max(selected_channels) + 1 if selected_channels else 1
                 )
+                blocksize = self._configured_blocksize(direction)
 
                 stream_type = (
                     self._backend.InputStream
@@ -216,11 +219,12 @@ class AudioService:
                         samplerate=device.sample_rate,
                         channels=native_channels,
                         dtype="float32",
-                        blocksize=0,
+                        blocksize=blocksize,
                     )
                     stream = native_stream
                     native_stream.start()
                 self._streams[direction] = stream
+                self._stream_blocksizes[direction] = blocksize
                 if direction == "input":
                     self._stream_routing[direction] = cast(InputRouting, routing)
                 else:
@@ -242,6 +246,7 @@ class AudioService:
     def close_stream(self, direction: AudioDirection) -> bool:
         with self._operation_lock:
             stream = self._streams.pop(direction, None)
+            self._stream_blocksizes.pop(direction, None)
             self._stream_routing.pop(direction, None)
             if stream is None:
                 return True
@@ -265,10 +270,16 @@ class AudioService:
             raise ValueError("Sample count must be positive")
         with self._operation_lock:
             stream = self._streams.get("input")
+            blocksize = self._stream_blocksizes.get("input")
             routing = self._stream_routing.get("input")
         if stream is None:
             raise AudioError("Audio input is not open")
         try:
+            if samples != blocksize:
+                raise AudioError(
+                    f"Audio input read size must equal blocksize {blocksize}, "
+                    f"got {samples}"
+                )
             data, overflowed = stream.read(samples)
             if overflowed:
                 raise AudioError("Audio input overflow")
@@ -290,6 +301,7 @@ class AudioService:
     def write(self, data: NDArray[Any]) -> None:
         with self._operation_lock:
             stream = self._streams.get("output")
+            blocksize = self._stream_blocksizes.get("output")
             routing = self._stream_routing.get("output")
         if stream is None:
             raise AudioError("Audio output is not open")
@@ -298,6 +310,11 @@ class AudioService:
             if logical.ndim != 1:
                 raise AudioError(
                     "Audio output data must be a one-dimensional mono array"
+                )
+            if len(logical) != blocksize:
+                raise AudioError(
+                    f"Audio output write size must equal blocksize {blocksize}, "
+                    f"got {len(logical)}"
                 )
             if not isinstance(routing, tuple):
                 raise AudioError("Audio output routing is unavailable")
@@ -312,6 +329,18 @@ class AudioService:
             self.close_stream("output")
             self._report_error(error)
             raise AudioError(str(error)) from error
+
+    def blocksize(self, direction: AudioDirection) -> int:
+        with self._operation_lock:
+            return self._stream_blocksizes.get(
+                direction,
+                self._configured_blocksize(direction),
+            )
+
+    def _configured_blocksize(self, direction: AudioDirection) -> int:
+        if direction == "input":
+            return self.settings.input_block_size
+        return self.settings.output_block_size
 
     def _reserve_session(self) -> None:
         with self._condition:
@@ -461,8 +490,8 @@ class AudioInput:
         return device.sample_rate if device is not None else 0
 
     @property
-    def block_size(self) -> int:
-        return self._service.settings.input_block_size
+    def blocksize(self) -> int:
+        return self._service.blocksize("input")
 
     def open(self) -> bool:
         return self._service.open_stream("input")
@@ -484,8 +513,8 @@ class AudioOutput:
         return device.sample_rate if device is not None else 0
 
     @property
-    def block_size(self) -> int:
-        return self._service.settings.output_block_size
+    def blocksize(self) -> int:
+        return self._service.blocksize("output")
 
     def open(self) -> bool:
         return self._service.open_stream("output")

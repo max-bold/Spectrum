@@ -12,7 +12,7 @@ from audioanalysis import (
     calibrate_semi_analog_thd_mask,
     generate_semi_analog_thd_sweep,
 )
-from spectrum_app.core.audio import AudioInput, AudioOutput
+from spectrum_app.core.audio import CLIPPING_THRESHOLD, AudioInput, AudioOutput
 
 
 LevelCallback = Callable[[np.ndarray, np.ndarray, float], None]
@@ -58,10 +58,8 @@ class THDAcquisition(Thread):
         self._writer_error: Exception | None = None
         self._writer_lock = Lock()
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
         self._stop_event.set()
-        self.audio_input.close()
-        self.audio_output.close()
 
     def run(self) -> None:
         chunks: list[np.ndarray] = []
@@ -111,11 +109,13 @@ class THDAcquisition(Thread):
                 writer_error = self._get_writer_error()
                 if writer_error is not None:
                     raise writer_error
-                samples = min(self.audio_input.block_size, target_samples - recorded)
-                block = self.audio_input.read(samples)
+                block = self.audio_input.read(self.audio_input.blocksize)
                 if len(block) == 0:
                     raise RuntimeError("Audio input returned no samples")
-                channel_1 = np.asarray(block[:, [0]], dtype=np.float32)
+                remaining = target_samples - recorded
+                channel_1 = np.asarray(block[:remaining, [0]], dtype=np.float32)
+                if float(np.max(np.abs(channel_1))) >= CLIPPING_THRESHOLD:
+                    raise RuntimeError("Input clipping detected on channel A")
                 chunks.append(channel_1)
                 recorded += len(channel_1)
                 level_time.append(recorded / input_rate)
@@ -141,10 +141,10 @@ class THDAcquisition(Thread):
         finally:
             cancelled = self._stop_event.is_set()
             self._stop_event.set()
+            if writer is not None and writer.is_alive():
+                writer.join()
             self.audio_output.close()
             self.audio_input.close()
-            if writer is not None and writer.is_alive():
-                writer.join(timeout=1.0)
             times = np.asarray(level_time, dtype=np.float64)
             levels = np.asarray(level_values, dtype=np.float64)
             if levels.size:
@@ -179,9 +179,12 @@ class THDAcquisition(Thread):
 
     def _write_array(self, data: np.ndarray) -> None:
         position = 0
+        blocksize = self.audio_output.blocksize
         while position < len(data) and not self._stop_event.is_set():
-            end = min(position + self.audio_output.block_size, len(data))
-            block = data[position:end, 0]
+            end = min(position + blocksize, len(data))
+            samples = end - position
+            block = np.zeros(blocksize, dtype=np.float32)
+            block[:samples] = data[position:end, 0]
             self.audio_output.write(block)
             position = end
 

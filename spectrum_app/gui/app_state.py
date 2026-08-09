@@ -53,6 +53,17 @@ class AppStatePanel:
             self._add_measurement_row(measurement)
         self._sync_active_measurement_checkboxes()
 
+    def sync_visibility(self) -> None:
+        """Reflect graph visibility changes made by measurement modules."""
+        if not self._built:
+            return
+        for measurement in self.app.app_state.measurements:
+            if measurement.id in self._shown_measurement_ids:
+                dpg.set_value(
+                    self._visible_tag(measurement.id),
+                    self._measurement_is_visible(measurement),
+                )
+
     def _add_measurement_row(self, measurement: Measurement) -> None:
         with dpg.table_row(  # pyright: ignore[reportGeneralTypeIssues]
             parent=self.measurements_table,
@@ -161,8 +172,7 @@ class AppStatePanel:
     def _measurement_is_visible(self, measurement: Measurement) -> bool:
         graph_ids = [graph.id for graph in measurement.graphs]
         return bool(graph_ids) and all(
-            graph_id in self.app.app_state.visible_graph_ids
-            for graph_id in graph_ids
+            graph_id in self.app.app_state.visible_graph_ids for graph_id in graph_ids
         )
 
     def _find_measurement(self, measurement_id: str) -> Measurement:

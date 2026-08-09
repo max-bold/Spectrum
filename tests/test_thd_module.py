@@ -24,7 +24,7 @@ from tests.test_dpg_lifecycle import FakeDpgBackend
 
 class PreparedTHDInput:
     sample_rate = 8_000
-    block_size = 512
+    blocksize = 512
 
     def __init__(self, data: NDArray[np.float32]) -> None:
         self.data = data.reshape(-1, 1)
@@ -57,7 +57,7 @@ class PreparedTHDInput:
 
 class RecordingTHDOutput:
     sample_rate = 8_000
-    block_size = 512
+    blocksize = 512
 
     def __init__(self) -> None:
         self.write_threads: list[str] = []

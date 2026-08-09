@@ -11,7 +11,7 @@ from audioanalysis import (
     analyze_phase,
     log_chirp,
 )
-from spectrum_app.core.audio import AudioInput, AudioOutput
+from spectrum_app.core.audio import CLIPPING_THRESHOLD, AudioInput, AudioOutput
 
 LevelCallback = Callable[[np.ndarray, np.ndarray, tuple[float, float]], None]
 CompleteCallback = Callable[
@@ -54,10 +54,8 @@ class PhaseAcquisition(Thread):
         self._writer_error: Exception | None = None
         self._writer_lock = Lock()
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
         self._stop_event.set()
-        self.audio_input.close()
-        self.audio_output.close()
 
     def run(self) -> None:
         chunks: list[np.ndarray] = []
@@ -99,18 +97,32 @@ class PhaseAcquisition(Thread):
                 writer_error = self._get_writer_error()
                 if writer_error is not None:
                     raise writer_error
-                samples = min(self.audio_input.block_size, target_samples - recorded)
-                block = np.asarray(self.audio_input.read(samples), dtype=np.float32)
+                block = np.asarray(
+                    self.audio_input.read(self.audio_input.blocksize),
+                    dtype=np.float32,
+                )
                 if block.ndim != 2 or block.shape[1] != 2:
                     raise RuntimeError(
                         "Audio input must return logical channels A and B"
                     )
                 if len(block) == 0:
                     raise RuntimeError("Audio input returned no samples")
-                chunks.append(block)
-                recorded += len(block)
+                remaining = target_samples - recorded
+                active = block[:remaining]
+                peaks = np.max(np.abs(active), axis=0)
+                clipped = [
+                    label
+                    for label, peak in zip(("A", "B"), peaks, strict=True)
+                    if peak >= CLIPPING_THRESHOLD
+                ]
+                if clipped:
+                    raise RuntimeError(
+                        f"Input clipping detected on channel {'/'.join(clipped)}"
+                    )
+                chunks.append(active)
+                recorded += len(active)
                 level_time.append(recorded / input_rate)
-                level_values.append(np.max(np.abs(block), axis=0).astype(np.float64))
+                level_values.append(np.max(np.abs(active), axis=0).astype(np.float64))
                 if recorded >= next_update:
                     levels = np.vstack(level_values)
                     self.on_level(
@@ -133,10 +145,10 @@ class PhaseAcquisition(Thread):
         finally:
             cancelled = self._stop_event.is_set()
             self._stop_event.set()
+            if writer is not None and writer.is_alive():
+                writer.join()
             self.audio_output.close()
             self.audio_input.close()
-            if writer is not None and writer.is_alive():
-                writer.join(timeout=1.0)
             times = np.asarray(level_time, dtype=np.float64)
             levels = (
                 np.vstack(level_values)
@@ -175,10 +187,7 @@ class PhaseAcquisition(Thread):
             sample_rate,
             self.band,
             amplitude=self.OUTPUT_LEVEL,
-            channels=1,
-            pad=0,
-            fade=fade_samples,
-        )
+        ).fade(fade_samples, fade_samples)
         return sweep.pad(
             in_=int(round(self.pre_silence * sample_rate)),
             out=int(round(self.post_silence * sample_rate)),
@@ -188,9 +197,13 @@ class PhaseAcquisition(Thread):
         try:
             data = generator.as_array(np.float32)[:, 0]
             position = 0
+            blocksize = self.audio_output.blocksize
             while position < len(data) and not self._stop_event.is_set():
-                end = min(position + self.audio_output.block_size, len(data))
-                self.audio_output.write(data[position:end])
+                end = min(position + blocksize, len(data))
+                samples = end - position
+                block = np.zeros(blocksize, dtype=np.float32)
+                block[:samples] = data[position:end]
+                self.audio_output.write(block)
                 position = end
         except Exception as error:
             if not self._stop_event.is_set():

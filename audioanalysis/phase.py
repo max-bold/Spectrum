@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter1d
+from scipy.optimize import least_squares
 
 from .smoothing import SmoothingWindow, grid_smooth
 from .types import ASignal, FrequencyBand
@@ -18,16 +19,15 @@ class PhaseConfig:
     """Settings for a two-channel acoustic phase measurement.
 
     Logical input A is the measured acoustic signal and logical input B is the
-    electrical reference. ``delay_correction_meters`` is added to the fitted
-    delay before phase compensation; positive values therefore remove more
-    propagation delay from the displayed phase.
+    electrical reference. ``delay_correction_meters`` is the total propagation
+    distance removed from the displayed phase. ``None`` uses the fitted delay.
     """
 
     band: FrequencyBand = FrequencyBand()
     delay_fit_band: FrequencyBand = FrequencyBand(80.0, 15_000.0)
     points: int = 1024
     smoothing_octaves: float = 1.0 / 3.0
-    delay_correction_meters: float = 0.0
+    delay_correction_meters: float | None = None
     minimum_a_db: float = -60.0
     minimum_b_db: float = -60.0
     speed_of_sound: float = SPEED_OF_SOUND_M_S
@@ -87,27 +87,76 @@ def analyze_phase(recording: ASignal, config: PhaseConfig) -> PhaseResult:
         where=np.abs(fft_b) > _EPSILON,
     )
 
-    delay = estimate_phase_delay(
+    valid_transfer = np.isfinite(transfer)
+    if np.count_nonzero(valid_transfer) < 2:
+        raise ValueError("Not enough valid FFT bins for phase analysis")
+    unwrapped_phase = np.interp(
         frequency,
-        transfer,
-        fft_a,
-        fft_b,
+        frequency[valid_transfer],
+        np.unwrap(np.angle(transfer[valid_transfer])),
+    )
+    grid = np.geomspace(config.band.low, config.band.high, config.points)
+    smoothed_phase = np.asarray(
+        grid_smooth(
+            frequency,
+            unwrapped_phase,
+            grid,
+            window=SmoothingWindow.GAUSSIAN,
+            width=config.smoothing_octaves,
+        ),
+        dtype=np.float64,
+    )
+    smoothed_a = np.asarray(
+        grid_smooth(
+            frequency,
+            np.abs(fft_a),
+            grid,
+            window=SmoothingWindow.GAUSSIAN,
+            width=config.smoothing_octaves,
+        ),
+        dtype=np.float64,
+    )
+    smoothed_b = np.asarray(
+        grid_smooth(
+            frequency,
+            np.abs(fft_b),
+            grid,
+            window=SmoothingWindow.GAUSSIAN,
+            width=config.smoothing_octaves,
+        ),
+        dtype=np.float64,
+    )
+    delay = _estimate_phase_delay_from_unwrapped(
+        grid,
+        smoothed_phase,
+        smoothed_a,
+        smoothed_b,
         config.delay_fit_band,
         minimum_a_db=config.minimum_a_db,
         minimum_b_db=config.minimum_b_db,
     )
-    compensation_delay = delay + config.delay_correction_meters / config.speed_of_sound
-    compensated = transfer * np.exp(1j * 2.0 * np.pi * frequency * compensation_delay)
-    grid = np.geomspace(config.band.low, config.band.high, config.points)
-    smoothed = grid_smooth(
+    compensation_delay = (
+        delay
+        if config.delay_correction_meters is None
+        else config.delay_correction_meters / config.speed_of_sound
+    )
+    compensated_phase = smoothed_phase + (
+        2.0 * np.pi * grid * compensation_delay
+    )
+    compensated_transfer = transfer * np.exp(
+        1j * 2.0 * np.pi * frequency * compensation_delay
+    )
+    smoothed_compensated = grid_smooth(
         frequency,
-        compensated,
+        compensated_transfer,
         grid,
         window=SmoothingWindow.GAUSSIAN,
         width=config.smoothing_octaves,
     )
-    magnitude_db = 20.0 * np.log10(np.maximum(np.abs(smoothed), _EPSILON))
-    phase_degrees = np.rad2deg(np.unwrap(np.angle(smoothed)))
+    magnitude_db = 20.0 * np.log10(
+        np.maximum(np.abs(smoothed_compensated), _EPSILON)
+    )
+    phase_degrees = np.rad2deg(compensated_phase)
     return PhaseResult(
         frequency=grid,
         magnitude_db=np.asarray(magnitude_db, dtype=np.float64),
@@ -121,14 +170,18 @@ def analyze_phase(recording: ASignal, config: PhaseConfig) -> PhaseResult:
 def estimate_phase_delay(
     frequency: NDArray[np.floating],
     transfer: NDArray[np.complexfloating],
-    fft_a: NDArray[np.complexfloating],
-    fft_b: NDArray[np.complexfloating],
+    fft_a: NDArray[np.number],
+    fft_b: NDArray[np.number],
     fit_band: FrequencyBand,
     *,
     minimum_a_db: float = -60.0,
     minimum_b_db: float = -60.0,
 ) -> float:
-    """Estimate A relative to B delay from weighted phase slope."""
+    """Estimate A relative to B delay from a weighted phase slope.
+
+    ``frequency`` may be a linear FFT grid or a pre-smoothed logarithmic grid.
+    The channel spectra are used only for level rejection and fit weights.
+    """
 
     frequency = np.asarray(frequency, dtype=np.float64)
     transfer = np.asarray(transfer, dtype=np.complex128)
@@ -139,12 +192,45 @@ def estimate_phase_delay(
     ):
         raise ValueError("Phase delay arrays must have equal shapes")
 
+    phase = np.full(transfer.shape, np.nan, dtype=np.float64)
+    valid = np.isfinite(transfer)
+    phase[valid] = np.unwrap(np.angle(transfer[valid]))
+    return _estimate_phase_delay_from_unwrapped(
+        frequency,
+        phase,
+        magnitude_a,
+        magnitude_b,
+        fit_band,
+        minimum_a_db=minimum_a_db,
+        minimum_b_db=minimum_b_db,
+    )
+
+
+def _estimate_phase_delay_from_unwrapped(
+    frequency: NDArray[np.floating],
+    phase: NDArray[np.floating],
+    magnitude_a: NDArray[np.number],
+    magnitude_b: NDArray[np.number],
+    fit_band: FrequencyBand,
+    *,
+    minimum_a_db: float = -60.0,
+    minimum_b_db: float = -60.0,
+) -> float:
+    frequency = np.asarray(frequency, dtype=np.float64)
+    phase = np.asarray(phase, dtype=np.float64)
+    magnitude_a = np.abs(np.asarray(magnitude_a))
+    magnitude_b = np.abs(np.asarray(magnitude_b))
+    if not (
+        frequency.shape == phase.shape == magnitude_a.shape == magnitude_b.shape
+    ):
+        raise ValueError("Phase delay arrays must have equal shapes")
+
     limit_a = float(np.max(magnitude_a)) * 10.0 ** (minimum_a_db / 20.0)
     limit_b = float(np.max(magnitude_b)) * 10.0 ** (minimum_b_db / 20.0)
     mask = (
         (frequency >= fit_band.low)
         & (frequency <= fit_band.high)
-        & np.isfinite(transfer)
+        & np.isfinite(phase)
         & (magnitude_a >= limit_a)
         & (magnitude_b >= limit_b)
     )
@@ -152,18 +238,48 @@ def estimate_phase_delay(
         raise ValueError("Not enough valid FFT bins for delay estimation")
 
     fit_frequency = frequency[mask]
-    phase = np.unwrap(np.angle(transfer[mask]))
+    fit_phase = phase[mask]
     weights = np.sqrt(magnitude_a[mask] * magnitude_b[mask])
     maximum_weight = float(np.max(weights))
     if maximum_weight <= 0.0:
         raise ValueError("Input signals are too quiet for delay estimation")
-    slope, _ = np.polyfit(
-        fit_frequency,
-        phase,
+    normalized_weights = weights / maximum_weight
+    frequency_center = float(np.mean(fit_frequency))
+    frequency_scale = float(np.ptp(fit_frequency))
+    if frequency_scale <= 0.0:
+        raise ValueError("Delay fit frequencies must span a non-zero range")
+    phase_center = float(np.mean(fit_phase))
+    phase_scale = max(float(np.ptp(fit_phase)), 1.0)
+    normalized_frequency = (fit_frequency - frequency_center) / frequency_scale
+    normalized_phase = (fit_phase - phase_center) / phase_scale
+    initial = np.polyfit(
+        normalized_frequency,
+        normalized_phase,
         1,
-        w=weights / maximum_weight,
+        w=normalized_weights,
     )
+    fit = least_squares(
+        _quartic_residuals,
+        initial,
+        args=(normalized_frequency, normalized_phase, normalized_weights),
+    )
+    if not fit.success or not np.all(np.isfinite(fit.x)):
+        raise ValueError(f"Fourth-power delay fit failed: {fit.message}")
+    slope = float(fit.x[0]) * phase_scale / frequency_scale
     return float(-slope / (2.0 * np.pi))
+
+
+def _quartic_residuals(
+    coefficients: NDArray[np.floating],
+    frequency: NDArray[np.float64],
+    phase: NDArray[np.float64],
+    weights: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    residuals = weights * (
+        phase - (coefficients[0] * frequency + coefficients[1])
+    )
+    # least_squares squares these values, producing sum((w * error) ** 4).
+    return np.asarray(residuals * np.abs(residuals), dtype=np.float64)
 
 
 def wrap_phase(phase: NDArray[np.floating]) -> NDArray[np.float64]:

@@ -2,10 +2,9 @@
 
 from .audioio import AudioDevice, list_devices, play_and_record
 from .generators import (
-    PinkNoiseThread,
     log_chirp,
     pink_noise,
-    pink_noise_zi,
+    pinking_sos,
     white_noise,
 )
 from .levels import as_channels, normalize_peak, peak_levels
@@ -25,6 +24,7 @@ from .impedance import (
     generate_channel_calibration_signal,
     generate_level_test_signal,
     generate_measurement_signal,
+    interpolate_channel_calibration,
     require_valid_reference_calibration,
     trim_recording,
 )
@@ -45,6 +45,13 @@ from .phase import (
     estimate_phase_delay,
     phase_derivative,
     wrap_phase,
+)
+from .rta import (
+    RTAConfig,
+    RTAResult,
+    RTAWindow,
+    analyze_rta,
+    compensate_log_band_density,
 )
 from .smoothing import SmoothingWindow, grid_smooth, log_smooth, log_window
 from .spectrum import (
@@ -79,10 +86,12 @@ __all__ = [
     "FitResult",
     "ImpedanceConfig",
     "ImpedanceResult",
-    "PinkNoiseThread",
     "PhaseConfig",
     "PhaseResult",
     "ReferenceMode",
+    "RTAConfig",
+    "RTAResult",
+    "RTAWindow",
     "SmoothingWindow",
     "SpectrumConfig",
     "SpectrumResult",
@@ -99,6 +108,8 @@ __all__ = [
     "analyze_recording_levels",
     "analyze_semi_analog_thd",
     "analyze_phase",
+    "analyze_rta",
+    "compensate_log_band_density",
     "analyze_spectrum",
     "as_channels",
     "break_phase_wraps",
@@ -117,6 +128,7 @@ __all__ = [
     "generate_channel_calibration_signal",
     "generate_level_test_signal",
     "generate_measurement_signal",
+    "interpolate_channel_calibration",
     "generate_semi_analog_thd_sweep",
     "grid_smooth",
     "list_devices",
@@ -130,7 +142,7 @@ __all__ = [
     "wrap_phase",
     "phase_degrees",
     "pink_noise",
-    "pink_noise_zi",
+    "pinking_sos",
     "play_and_record",
     "power_db",
     "require_valid_reference_calibration",
