@@ -15,32 +15,31 @@ v0.2.2
 + Fix exception on device disconnection
 
 v0.2.3
-- Fix pink noise generator clicking
++ Fix pink noise generator clicking
 + Saving input/output settings on app restart
 + Buffer size selection in settings
 + Update timeplot on record import
 
-v0.2.4
-- Get Apple Developer credentials for macOS Developer ID signing and notarization
-- Fix missing microphone permission prompt on macOS Tahoe arm64 builds
-- Fix manual zoom/pan for the impedance Phase/Dir secondary Y-axis; automatic scaling already works
-- Verify SPICE model fitting against real impedance measurements
-
 v0.3
-- Implement multi-record mode with averaging
 + Implement semi-analog swept THD+N calculation and display - done
-
-v0.3.1
-- Automatically choose the RTA smoothing width from point count and band spacing
-- Improve the delay-fitting algorithm for phase measurements
-- Add schema versions and migrations for module state
-- Isolate module discovery and initialization failures from the rest of the application
-- Track and remove module-owned menu items and callbacks during shutdown
-- Implement a Module Manager for loading external modules
-- Expand the plot workspace to support multiple plot panels
-- Replace the shared frame-callback list with a typed signal/callback API
-- Add project-format versioning and migrations to reduce coupling to pickled classes
++ Implement real-time analyzer mode
++ Implement impedance measurement mode
 
 v0.4
-- Implement real-time analyzer mode
-- Implement impedance measurement mode
+- Automatically choose the RTA smoothing width from point count and band spacing
+- Improve the delay-fitting algorithm for phase measurements
+- Implement multi-record mode with averaging
+
+v0.5
+- Verify SPICE model fitting against real impedance measurements
+
+v0.9
+- Implement a Module Manager for manual loading/unloading external modules
+- Add schema versions and migrations for module state
+- Replace the shared frame-callback list with a typed signal/callback API
+- Add project-format versioning and migrations to reduce coupling to pickled classes
+- Isolate module discovery and initialization failures from the rest of the application
+
+v1.0
+- Get Apple Developer credentials for macOS Developer ID signing and notarization
+- Fix missing microphone permission prompt on macOS Tahoe arm64 builds
