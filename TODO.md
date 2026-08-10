@@ -1,5 +1,4 @@
 + Build macOS and Linux versions and test functionality on those platforms.
-- Expand documentation to include setup instructions for different operating systems.
 
 v0.2
 + Implement graph saving (PNG/JPG) - done
@@ -43,3 +42,4 @@ v0.9
 v1.0
 - Get Apple Developer credentials for macOS Developer ID signing and notarization
 - Fix missing microphone permission prompt on macOS Tahoe arm64 builds
+- Expand documentation
