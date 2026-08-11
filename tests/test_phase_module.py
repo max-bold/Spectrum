@@ -7,11 +7,12 @@ from unittest.mock import patch
 import numpy as np
 from numpy.typing import NDArray
 
-from audioanalysis import ASignal
+from audioanalysis import ASignal, FrequencyBand
 from spectrum_app import SpectrumApplication
 from spectrum_app.core.audio import AudioInput, AudioOutput
 from spectrum_app.core.model import AxisSpec
 from spectrum_app.modules.phase import PhaseModule
+from spectrum_app.modules.phase.jobs import PhaseAcquisition
 from spectrum_app.modules.phase.settings import PhaseSettings, PhaseSettingsWindow
 from spectrum_app.modules.phase.view import PhaseView
 from tests.test_dpg_lifecycle import FakeDpgBackend
@@ -66,6 +67,25 @@ class RecordingPhaseOutput:
 
 
 class PhaseModuleTests(unittest.TestCase):
+    def test_generator_adds_fades_outside_the_working_band(self) -> None:
+        acquisition = PhaseAcquisition(
+            cast(AudioInput, PreparedPhaseInput()),
+            cast(AudioOutput, RecordingPhaseOutput()),
+            band=FrequencyBand(50.0, 2_500.0),
+            duration=4.0,
+            pre_silence=0.2,
+            post_silence=0.3,
+            fade=0.1,
+            on_level=lambda *args: None,
+            on_complete=lambda *args: None,
+        )
+
+        generator = acquisition._generate_signal()
+
+        self.assertAlmostEqual(acquisition.sweep_duration, 4.2)
+        self.assertAlmostEqual(acquisition.total_duration, 4.7)
+        self.assertEqual(generator.sample_count, round(4.7 * generator.sample_rate))
+
     def test_view_builds_phase_controls_meter_and_level_history(self) -> None:
         backend = FakeDpgBackend()
         app = SpectrumApplication()
@@ -82,7 +102,7 @@ class PhaseModuleTests(unittest.TestCase):
             try:
                 self.assertAlmostEqual(
                     measurement.module_state["smoothing_octaves"],
-                    1.0 / 3.0,
+                    0.1,
                 )
                 self.assertEqual(measurement.module_state["points"], 1024)
                 self.assertEqual(

@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from audioanalysis import ASignal, FrequencyBand, THDMaskFit
+from audioanalysis import ASignal, FrequencyBand
 from spectrum_app import SpectrumApplication
 from spectrum_app.core.measurement_io import (
     AUDIO_ARRAY_ENCODING,
@@ -20,11 +20,6 @@ class MeasurementIOTests(unittest.TestCase):
     def test_json_round_trip_preserves_audio_arrays_and_module_types(self) -> None:
         samples = np.sin(np.linspace(0.0, 20.0, 48_000, dtype=np.float32))
         recording = ASignal(np.column_stack((samples, samples * 0.5)), 48_000)
-        mask_fit = THDMaskFit(
-            left_params=np.array([1.0, 2.0]),
-            right_params=np.array([3.0, 4.0]),
-            leakage_ratio=0.001,
-        )
         graph = GraphData(
             "THD+N",
             np.array([20.0, 1000.0, 20_000.0]),
@@ -40,7 +35,6 @@ class MeasurementIOTests(unittest.TestCase):
                 "recording": recording,
                 "complex": np.array([1.0 + 2.0j, 3.0 - 4.0j]),
                 "signature": (48_000, FrequencyBand(20.0, 20_000.0)),
-                "mask_fit": mask_fit,
                 "special": float("inf"),
                 "$bmm": "ordinary module value",
             },
@@ -74,7 +68,6 @@ class MeasurementIOTests(unittest.TestCase):
             measurement.module_state["complex"],
         )
         self.assertEqual(loaded.module_state["signature"][1], FrequencyBand())
-        self.assertIsInstance(loaded.module_state["mask_fit"], THDMaskFit)
         self.assertTrue(np.isinf(loaded.module_state["special"]))
         self.assertEqual(loaded.module_state["$bmm"], "ordinary module value")
         np.testing.assert_array_equal(loaded.graphs[0].x, graph.x)

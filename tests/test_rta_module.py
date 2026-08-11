@@ -64,6 +64,13 @@ class RecordingRTAOutput:
 
 
 class RTAModuleTests(unittest.TestCase):
+    def test_intermediate_band_input_is_normalized_without_gui_exception(self) -> None:
+        self.assertEqual(RTAModule._normalize_setting("band", (0, 0)), (1, 2))
+        self.assertEqual(
+            RTAModule._normalize_setting("band", (1_000, 100)),
+            (1_000, 1_001),
+        )
+
     def test_view_builds_rta_controls_and_compact_level_meter(self) -> None:
         backend = FakeDpgBackend()
         app = SpectrumApplication()
@@ -80,6 +87,7 @@ class RTAModuleTests(unittest.TestCase):
             try:
                 self.assertTrue(measurement.module_state["noise"])
                 self.assertEqual(measurement.module_state["points"], 31)
+                self.assertEqual(measurement.module_state["smoothing_octaves"], 0.1)
                 self.assertTrue(
                     any(
                         call[0] == "drawlist" and call[1].get("tag") == RTAView.METER
@@ -271,6 +279,32 @@ class RTAModuleTests(unittest.TestCase):
             finally:
                 module._io_worker = None
                 module.deactivate()
+                module.shutdown()
+
+    def test_bar_width_matches_grid_step_and_line_defaults_to_point_one(self) -> None:
+        app = SpectrumApplication()
+        measurement = app.create_measurement("rta")
+        module = cast(RTAModule, app.module_manager.module("rta"))
+
+        with (
+            patch.object(RTASettingsWindow, "build"),
+            patch.object(RTASettingsWindow, "destroy"),
+        ):
+            module.initialize(app)
+            try:
+                module._ensure_state(measurement.module_state)
+                bar_config = module._build_analysis_config(
+                    measurement.module_state
+                )
+                expected = np.log2(20_000.0 / 20.0) / (31 - 1)
+                self.assertAlmostEqual(bar_config.smoothing_width, expected)
+
+                app.settings.set_module_setting("rta", "plot_type", "line")
+                line_config = module._build_analysis_config(
+                    measurement.module_state
+                )
+                self.assertEqual(line_config.smoothing_width, 0.1)
+            finally:
                 module.shutdown()
 
 

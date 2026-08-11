@@ -137,7 +137,7 @@ class THDModuleTests(unittest.TestCase):
                 )
                 self.assertAlmostEqual(
                     measurement.module_state["smoothing_octaves"],
-                    1.0 / 3.0,
+                    0.1,
                 )
             finally:
                 module.deactivate()
@@ -151,8 +151,9 @@ class THDModuleTests(unittest.TestCase):
             smoothing_octaves=1.0 / 3.0,
             segment_seconds=0.25,
             overlap=0.75,
-            sweep_band_expansion=1.25,
-            mask_expansion=2.0,
+            fade_in_seconds=0.1,
+            fade_out_seconds=0.1,
+            notch_ratio=1.5,
             points=128,
         )
         generator = generate_semi_analog_thd_sweep(config).as_array(np.float64)[:, 0]
@@ -174,8 +175,9 @@ class THDModuleTests(unittest.TestCase):
         for key, value in (
             ("segment_seconds", 0.25),
             ("overlap_percent", 75.0),
-            ("sweep_band_expansion", 1.25),
-            ("mask_expansion", 2.0),
+            ("fade_in_seconds", 0.1),
+            ("fade_out_seconds", 0.1),
+            ("notch_ratio", 1.5),
             ("points", 128),
         ):
             app.settings.set_module_setting("thd", key, value)
@@ -229,22 +231,25 @@ class THDModuleTests(unittest.TestCase):
 
         settings.segment_seconds = 0.5
         settings.overlap_percent = 80.0
-        settings.sweep_band_expansion = 1.25
-        settings.mask_expansion = 2.5
+        settings.fade_in_seconds = 0.25
+        settings.fade_out_seconds = 0.75
+        settings.notch_ratio = 1.75
         settings.points = 640
 
         self.assertEqual(settings.segment_seconds, 0.5)
         self.assertEqual(settings.overlap_percent, 80.0)
-        self.assertEqual(settings.sweep_band_expansion, 1.25)
-        self.assertEqual(settings.mask_expansion, 2.5)
+        self.assertEqual(settings.fade_in_seconds, 0.25)
+        self.assertEqual(settings.fade_out_seconds, 0.75)
+        self.assertEqual(settings.notch_ratio, 1.75)
         self.assertEqual(settings.points, 640)
         self.assertEqual(
             changes,
             [
                 "segment_seconds",
                 "overlap_percent",
-                "sweep_band_expansion",
-                "mask_expansion",
+                "fade_in_seconds",
+                "fade_out_seconds",
+                "notch_ratio",
                 "points",
             ],
         )

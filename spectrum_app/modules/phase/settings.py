@@ -112,7 +112,12 @@ class PhaseSettingsWindow:
                 self.settings.post_silence,
                 self._set_post_silence,
             )
-            self._add_float("Fade, s", self.fade, self.settings.fade, self._set_fade)
+            self._add_float(
+                "Fade in/out, s",
+                self.fade,
+                self.settings.fade,
+                self._set_fade,
+            )
 
     def destroy(self) -> None:
         for item in (self.TAG, self.MENU_ITEM):

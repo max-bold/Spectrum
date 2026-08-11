@@ -26,7 +26,7 @@ class PhaseConfig:
     band: FrequencyBand = FrequencyBand()
     delay_fit_band: FrequencyBand = FrequencyBand(80.0, 15_000.0)
     points: int = 1024
-    smoothing_octaves: float = 1.0 / 3.0
+    smoothing_octaves: float = 0.1
     delay_correction_meters: float | None = None
     minimum_a_db: float = -60.0
     minimum_b_db: float = -60.0

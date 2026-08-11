@@ -171,6 +171,8 @@ class ModuleStopTests(unittest.TestCase):
                 sample_rate=8_000,
                 duration=1.0,
                 band=FrequencyBand(50.0, 3_000.0),
+                fade_in_seconds=0.01,
+                fade_out_seconds=0.01,
             ),
             on_level=lambda *args: None,
             on_complete=lambda *args: None,
@@ -195,7 +197,7 @@ class ModuleStopTests(unittest.TestCase):
             duration=1.0,
             pre_silence=0.0,
             post_silence=0.0,
-            fade=0.1,
+            fade=0.01,
             on_level=lambda *args: None,
             on_complete=lambda *args: None,
         )

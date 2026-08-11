@@ -28,7 +28,7 @@ class RTAModule(BaseModule):
         "window_width": 1.0,
         "window_hop": 0.1,
         "points": 31,
-        "smoothing_octaves": 1.0 / 3.0,
+        "smoothing_octaves": 0.1,
         "recording": None,
         "result_frequency": None,
         "result_level_db": None,
@@ -413,10 +413,15 @@ class RTAModule(BaseModule):
         measurement = self._active_measurement()
         if measurement is None:
             return
-        if key == "plot_type":
-            self._restore_graphs(measurement)
-        elif key == "mode":
-            self._restore_graphs(measurement)
+        if key in ("plot_type", "mode"):
+            if self._view is not None:
+                self._view.update_smoothing_visibility(
+                    int(measurement.module_state["points"])
+                )
+            if isinstance(measurement.module_state.get("recording"), ASignal):
+                self._submit_stored_recording(measurement)
+            else:
+                self._restore_graphs(measurement)
         elif key == "window_function" and isinstance(
             measurement.module_state.get("recording"), ASignal
         ):
@@ -457,9 +462,13 @@ class RTAModule(BaseModule):
 
     def _build_analysis_config(self, state: dict[str, Any]) -> RTAConfig:
         points = int(state["points"])
-        width = 1.0 / 3.0 if points < 100 else float(state["smoothing_octaves"])
+        band = FrequencyBand(cast(tuple[float, float], state["band"]))
+        if self._effective_plot_type(points) == PlotType.BARS:
+            width = float(np.log2(band.high / band.low) / (points - 1))
+        else:
+            width = float(state["smoothing_octaves"])
         return RTAConfig(
-            band=FrequencyBand(cast(tuple[float, float], state["band"])),
+            band=band,
             points=points,
             smoothing_width=width,
             fft_window=self.settings.window_function,
@@ -526,9 +535,8 @@ class RTAModule(BaseModule):
             return bool(value)
         if key == "band":
             low, high = map(int, value)
-            if low <= 0 or high <= low:
-                raise ValueError("Invalid RTA frequency band")
-            return low, high
+            low = max(1, low)
+            return low, max(low + 1, high)
         if key == "level_db":
             return min(10.0, max(-10.0, float(value)))
         if key == "window_width":

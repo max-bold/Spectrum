@@ -9,6 +9,7 @@ from audioanalysis import (
     FrequencyBand,
     PhaseConfig,
     PhaseResult,
+    extend_log_sweep_band,
 )
 from spectrum_app.core.model import AxisSpec, GraphData, Measurement
 from spectrum_app.modules.base import BaseModule
@@ -28,7 +29,7 @@ class PhaseModule(BaseModule):
     DEFAULT_STATE: dict[str, Any] = {
         "band": (20, 20_000),
         "duration": 5.0,
-        "smoothing_octaves": 1.0 / 3.0,
+        "smoothing_octaves": 0.1,
         "points": 1024,
         "delay_correction_meters": None,
         "delay_correction_is_total": True,
@@ -100,6 +101,18 @@ class PhaseModule(BaseModule):
             self.app.main_window.module_gui_host,
             self.app.main_window.bottom_host,
             measurement.module_state,
+        )
+        levels = np.asarray(measurement.module_state["level_values"], dtype=np.float64)
+        current = (
+            (float(levels[-1, 0]), float(levels[-1, 1]))
+            if levels.ndim == 2 and levels.shape[0] and levels.shape[1] >= 2
+            else (0.0, 0.0)
+        )
+        self._view.update_levels(
+            np.asarray(measurement.module_state["level_time"], dtype=np.float64),
+            levels,
+            current,
+            duration=self._recording_duration(measurement),
         )
         recording = measurement.module_state.get("recording")
         if isinstance(recording, ASignal):
@@ -321,11 +334,7 @@ class PhaseModule(BaseModule):
                 times,
                 levels,
                 current,
-                duration=(
-                    float(measurement.module_state["duration"])
-                    + self.settings.pre_silence
-                    + self.settings.post_silence
-                ),
+                duration=self._recording_duration(measurement),
             )
 
     def _process_completion(
@@ -481,6 +490,12 @@ class PhaseModule(BaseModule):
         state = self.measurement.module_state
         band = FrequencyBand(*state["band"])
         band.validate(nyquist=min(input_rate, output_rate) / 2)
+        extend_log_sweep_band(
+            band,
+            float(state["duration"]),
+            self.settings.fade,
+            self.settings.fade,
+        ).validate(nyquist=output_rate / 2)
         self._build_config(input_rate).validate(input_rate)
 
     @staticmethod
@@ -547,12 +562,17 @@ class PhaseModule(BaseModule):
                 np.empty(0, dtype=np.float64),
                 np.empty((0, 2), dtype=np.float64),
                 (0.0, 0.0),
-                duration=(
-                    float(measurement.module_state["duration"])
-                    + self.settings.pre_silence
-                    + self.settings.post_silence
-                ),
+                duration=self._recording_duration(measurement),
             )
+
+    def _recording_duration(self, measurement: Measurement) -> float:
+        return (
+            self.settings.pre_silence
+            + self.settings.fade
+            + float(measurement.module_state["duration"])
+            + self.settings.fade
+            + self.settings.post_silence
+        )
 
     def _invalidate_analysis(self) -> None:
         self._analysis_revision += 1

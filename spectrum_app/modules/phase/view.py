@@ -47,7 +47,7 @@ class PhaseView:
                 width=-1,
                 callback=self._set_band,
             )
-            dpg.add_text("Duration, s")
+            dpg.add_text("Band duration, s")
             dpg.add_input_float(
                 tag=self.DURATION,
                 default_value=state["duration"],

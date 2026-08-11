@@ -39,7 +39,7 @@ class THDView:
                 width=-1,
                 callback=self._set_band,
             )
-            dpg.add_text("Duration, s")
+            dpg.add_text("Band duration, s")
             dpg.add_input_float(
                 default_value=state["duration"],
                 min_value=1.0,

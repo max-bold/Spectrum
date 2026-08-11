@@ -9,7 +9,6 @@ from audioanalysis import (
     FrequencyBand,
     SemiAnalogTHDConfig,
     SemiAnalogTHDResult,
-    THDMaskFit,
 )
 from spectrum_app.core.model import AxisSpec, GraphData, Measurement
 from spectrum_app.modules.base import BaseModule
@@ -28,17 +27,14 @@ class THDModule(BaseModule):
     DEFAULT_STATE: dict[str, Any] = {
         "band": (20, 20_000),
         "duration": 30.0,
-        "smoothing_octaves": 1.0 / 3.0,
+        "smoothing_octaves": 0.1,
         "recording": None,
         "generator": None,
-        "capture_sweep_band_expansion": None,
         "level_time": np.empty(0, dtype=np.float64),
         "level_values": np.empty(0, dtype=np.float64),
         "result_frequency": None,
         "result_ratio": None,
         "integrated_ratio": None,
-        "mask_fit": None,
-        "mask_signature": None,
         "analysis_signature": None,
         "status": "Ready",
     }
@@ -73,7 +69,6 @@ class THDModule(BaseModule):
         self._current_analysis_revision = 0
         self._finishing_revision: int | None = None
         self._analysis_measurement: Measurement | None = None
-        self._capture_sweep_expansion = THDSettings.DEFAULT_SWEEP_BAND_EXPANSION
         self._reanalysis_requested = False
         self._stop_requested = False
 
@@ -95,6 +90,12 @@ class THDModule(BaseModule):
             self.app.main_window.module_gui_host,
             self.app.main_window.bottom_host,
             measurement.module_state,
+        )
+        self._view.update_levels(
+            np.asarray(measurement.module_state["level_time"], dtype=np.float64),
+            np.asarray(measurement.module_state["level_values"], dtype=np.float64),
+            0.0,
+            duration=self._recording_duration(measurement),
         )
         recording = measurement.module_state.get("recording")
         if isinstance(recording, ASignal):
@@ -119,7 +120,6 @@ class THDModule(BaseModule):
             measurement = self.measurement
             self._capture_revision += 1
             revision = self._capture_revision
-            self._capture_sweep_expansion = output_config.sweep_band_expansion
             acquisition = THDAcquisition(
                 self.app.audio_input,
                 self.app.audio_output,
@@ -246,8 +246,8 @@ class THDModule(BaseModule):
         measurement = self._active_measurement()
         if measurement is None:
             return
-        if key == "sweep_band_expansion":
-            self._set_status("Sweep expansion will apply to new THD measurements")
+        if key in ("fade_in_seconds", "fade_out_seconds"):
+            self._set_status("Sweep fades will apply to new THD measurements")
             return
         if isinstance(measurement.module_state.get("recording"), ASignal):
             self._reanalysis_requested = True
@@ -318,7 +318,7 @@ class THDModule(BaseModule):
                 times,
                 levels,
                 current,
-                duration=float(measurement.module_state["duration"]),
+                duration=self._recording_duration(measurement),
             )
 
     def _process_completion(
@@ -364,7 +364,6 @@ class THDModule(BaseModule):
         state = measurement.module_state
         state["recording"] = recording
         state["generator"] = generator
-        state["capture_sweep_band_expansion"] = self._capture_sweep_expansion
         self._set_status("Calculating THD+N...")
         self._submit_analysis(measurement, recording, finishing=True)
 
@@ -387,16 +386,7 @@ class THDModule(BaseModule):
                 self._set_controls_enabled(True)
             return
 
-        state = measurement.module_state
-        mask_signature = self._mask_signature(config)
         analysis_signature = self._analysis_signature(config)
-        stored_fit = state.get("mask_fit")
-        mask_fit = (
-            stored_fit
-            if isinstance(stored_fit, THDMaskFit)
-            and state.get("mask_signature") == mask_signature
-            else None
-        )
         self._analysis_revision += 1
         revision = self._analysis_revision
         self._current_analysis_revision = revision
@@ -407,8 +397,6 @@ class THDModule(BaseModule):
             finishing,
             recording,
             config,
-            mask_fit,
-            mask_signature,
             analysis_signature,
         )
 
@@ -422,8 +410,6 @@ class THDModule(BaseModule):
             revision,
             finishing,
             result,
-            mask_fit,
-            mask_signature,
             analysis_signature,
             error,
         ) = response
@@ -431,15 +417,13 @@ class THDModule(BaseModule):
             return
         measurement = self._analysis_measurement
         if measurement is not None and measurement is self._active_measurement():
-            if error is not None or result is None or mask_fit is None:
+            if error is not None or result is None:
                 self._show_error(error or "Calculation failed")
             else:
                 state = measurement.module_state
                 state["result_frequency"] = result.frequency
                 state["result_ratio"] = result.ratio
                 state["integrated_ratio"] = result.integrated_ratio
-                state["mask_fit"] = mask_fit
-                state["mask_signature"] = mask_signature
                 state["analysis_signature"] = analysis_signature
                 self._update_graph(measurement, result)
                 self._set_status(
@@ -464,19 +448,10 @@ class THDModule(BaseModule):
         self,
         sample_rate: int,
         *,
-        sweep_expansion: float | None = None,
+        fade_in_seconds: float = 0.0,
+        fade_out_seconds: float = 0.0,
     ) -> SemiAnalogTHDConfig:
         state = self.measurement.module_state
-        stored_expansion = state.get("capture_sweep_band_expansion")
-        expansion = (
-            sweep_expansion
-            if sweep_expansion is not None
-            else (
-                float(stored_expansion)
-                if isinstance(stored_expansion, (int, float))
-                else self.settings.sweep_band_expansion
-            )
-        )
         return SemiAnalogTHDConfig(
             sample_rate=sample_rate,
             duration=float(state["duration"]),
@@ -484,8 +459,9 @@ class THDModule(BaseModule):
             smoothing_octaves=float(state["smoothing_octaves"]),
             segment_seconds=self.settings.segment_seconds,
             overlap=self.settings.overlap_percent / 100.0,
-            sweep_band_expansion=expansion,
-            mask_expansion=self.settings.mask_expansion,
+            fade_in_seconds=fade_in_seconds,
+            fade_out_seconds=fade_out_seconds,
+            notch_ratio=self.settings.notch_ratio,
             points=self.settings.points,
         )
 
@@ -496,34 +472,25 @@ class THDModule(BaseModule):
             raise ValueError("Audio input device is unavailable")
         if output_rate <= 0:
             raise ValueError("Audio output device is unavailable")
-        input_config = self._build_config(
-            input_rate,
-            sweep_expansion=self.settings.sweep_band_expansion,
-        )
+        input_config = self._build_config(input_rate)
         output_config = self._build_config(
             output_rate,
-            sweep_expansion=self.settings.sweep_band_expansion,
+            fade_in_seconds=self.settings.fade_in_seconds,
+            fade_out_seconds=self.settings.fade_out_seconds,
         )
         input_config.validate()
         output_config.validate()
         return output_config
 
     @staticmethod
-    def _mask_signature(config: SemiAnalogTHDConfig) -> tuple[object, ...]:
+    def _analysis_signature(config: SemiAnalogTHDConfig) -> tuple[object, ...]:
         return (
             config.sample_rate,
             config.duration,
             config.band,
             config.segment_seconds,
             config.overlap,
-            config.sweep_band_expansion,
-            config.mask_expansion,
-        )
-
-    @classmethod
-    def _analysis_signature(cls, config: SemiAnalogTHDConfig) -> tuple[object, ...]:
-        return (
-            *cls._mask_signature(config),
+            config.notch_ratio,
             config.smoothing_octaves,
             config.points,
         )
@@ -558,12 +525,9 @@ class THDModule(BaseModule):
         for key in (
             "recording",
             "generator",
-            "capture_sweep_band_expansion",
             "result_frequency",
             "result_ratio",
             "integrated_ratio",
-            "mask_fit",
-            "mask_signature",
             "analysis_signature",
         ):
             state[key] = None
@@ -586,8 +550,17 @@ class THDModule(BaseModule):
                 empty,
                 empty,
                 0.0,
-                duration=float(measurement.module_state["duration"]),
+                duration=self._recording_duration(measurement),
             )
+
+    def _recording_duration(self, measurement: Measurement) -> float:
+        return (
+            THDAcquisition.LEADING_SILENCE_SECONDS
+            + self.settings.fade_in_seconds
+            + float(measurement.module_state["duration"])
+            + self.settings.fade_out_seconds
+            + THDAcquisition.RECORDING_TAIL_SECONDS
+        )
 
     def _invalidate_analysis(self) -> None:
         self._analysis_revision += 1

@@ -9,6 +9,7 @@ from audioanalysis import (
     PhaseConfig,
     PhaseResult,
     analyze_phase,
+    extend_log_sweep_band,
     log_chirp,
 )
 from spectrum_app.core.audio import CLIPPING_THRESHOLD, AudioInput, AudioOutput
@@ -57,6 +58,23 @@ class PhaseAcquisition(Thread):
     def request_stop(self) -> None:
         self._stop_event.set()
 
+    @property
+    def sweep_duration(self) -> float:
+        return self.fade + self.duration + self.fade
+
+    @property
+    def total_duration(self) -> float:
+        return self.pre_silence + self.sweep_duration + self.post_silence
+
+    @property
+    def sweep_band(self) -> FrequencyBand:
+        return extend_log_sweep_band(
+            self.band,
+            self.duration,
+            self.fade,
+            self.fade,
+        )
+
     def run(self) -> None:
         chunks: list[np.ndarray] = []
         level_time: list[float] = []
@@ -82,11 +100,7 @@ class PhaseAcquisition(Thread):
             )
             writer.start()
 
-            target_samples = int(
-                round(
-                    (self.pre_silence + self.duration + self.post_silence) * input_rate
-                )
-            )
+            target_samples = int(round(self.total_duration * input_rate))
             update_samples = max(
                 1,
                 int(round(self.LEVEL_UPDATE_SECONDS * input_rate)),
@@ -177,15 +191,14 @@ class PhaseAcquisition(Thread):
 
     def _generate_signal(self) -> ASignal:
         sample_rate = self.audio_output.sample_rate
-        sweep_samples = max(1, int(round(self.duration * sample_rate)))
-        fade_samples = min(
-            sweep_samples // 2,
-            max(0, int(round(self.fade * sample_rate))),
-        )
+        sweep_band = self.sweep_band
+        sweep_band.validate(nyquist=sample_rate / 2.0)
+        sweep_samples = max(1, int(round(self.sweep_duration * sample_rate)))
+        fade_samples = max(0, int(round(self.fade * sample_rate)))
         sweep = log_chirp(
             sweep_samples,
             sample_rate,
-            self.band,
+            sweep_band,
             amplitude=self.OUTPUT_LEVEL,
         ).fade(fade_samples, fade_samples)
         return sweep.pad(

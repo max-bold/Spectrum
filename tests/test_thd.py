@@ -8,7 +8,7 @@ from audioanalysis import (
     FrequencyBand,
     SemiAnalogTHDConfig,
     analyze_semi_analog_thd,
-    calibrate_semi_analog_thd_mask,
+    fundamental_rejection_response,
     generate_semi_analog_thd_sweep,
 )
 
@@ -22,28 +22,40 @@ class SemiAnalogTHDTests(unittest.TestCase):
             smoothing_octaves=1.0 / 3.0,
             segment_seconds=0.25,
             overlap=0.75,
-            sweep_band_expansion=1.25,
-            mask_expansion=2.0,
+            fade_in_seconds=0.1,
+            fade_out_seconds=0.1,
+            notch_ratio=1.5,
             points=128,
         )
         self.sweep = generate_semi_analog_thd_sweep(self.config)
-        self.mask_fit = calibrate_semi_analog_thd_mask(
-            self.config,
-            self.sweep,
-        )
 
     def test_sweep_has_fixed_level_and_asignal_metadata(self) -> None:
         self.assertIsInstance(self.sweep, ASignal)
         self.assertEqual(self.sweep.sample_rate, self.config.sample_rate)
         self.assertEqual(self.sweep.channel_count, 1)
         self.assertEqual(self.sweep.sample_count, self.config.sample_count)
+        self.assertAlmostEqual(self.config.total_duration, 4.2)
         self.assertAlmostEqual(float(self.sweep.max()[0]), 0.9, places=5)
+
+        start, stop = self.config.sweep_band
+        sweep_rate = np.log(stop / start) / self.config.total_duration
+        self.assertAlmostEqual(
+            start * np.exp(sweep_rate * self.config.fade_in_seconds),
+            self.config.band.low,
+        )
+        self.assertAlmostEqual(
+            start
+            * np.exp(
+                sweep_rate
+                * (self.config.fade_in_seconds + self.config.duration)
+            ),
+            self.config.band.high,
+        )
 
     def test_clean_sweep_has_low_leakage_floor(self) -> None:
         result = analyze_semi_analog_thd(
             self.sweep,
             self.config,
-            mask_fit=self.mask_fit,
         )
 
         self.assertLess(result.integrated_percent, 0.2)
@@ -59,14 +71,16 @@ class SemiAnalogTHDTests(unittest.TestCase):
         result = analyze_semi_analog_thd(
             distorted,
             self.config,
-            mask_fit=self.mask_fit,
         )
 
         self.assertGreater(result.integrated_percent, 2.0)
-        self.assertGreater(
+        self.assertAlmostEqual(
             result.integrated_ratio,
-            self.mask_fit.leakage_ratio * 20.0,
+            np.sqrt(
+                np.sum(result.residual_energy) / np.sum(result.total_energy)
+            ),
         )
+        self.assertTrue(np.all(result.residual_energy <= result.total_energy))
 
     def test_tracking_tolerates_recording_delay(self) -> None:
         clean = self.sweep.as_array(np.float64)[:, 0]
@@ -75,7 +89,6 @@ class SemiAnalogTHDTests(unittest.TestCase):
         result = analyze_semi_analog_thd(
             delayed,
             self.config,
-            mask_fit=self.mask_fit,
         )
 
         self.assertLess(result.integrated_percent, 0.2)
@@ -91,7 +104,6 @@ class SemiAnalogTHDTests(unittest.TestCase):
         result = analyze_semi_analog_thd(
             stereo,
             self.config,
-            mask_fit=self.mask_fit,
         )
 
         self.assertLess(result.integrated_percent, 0.2)
@@ -101,8 +113,14 @@ class SemiAnalogTHDTests(unittest.TestCase):
             analyze_semi_analog_thd(
                 cast(Any, np.zeros(self.config.sample_count)),
                 self.config,
-                mask_fit=self.mask_fit,
             )
+
+    def test_rejection_window_has_fixed_frequency_ratio(self) -> None:
+        frequency = np.array([50.0, 100.0 / 1.5, 100.0, 150.0, 151.0])
+
+        response = fundamental_rejection_response(frequency, 100.0, 1.5)
+
+        np.testing.assert_array_equal(response, [1.0, 0.0, 0.0, 0.0, 1.0])
 
 
 if __name__ == "__main__":

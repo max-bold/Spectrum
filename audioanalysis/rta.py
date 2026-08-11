@@ -18,7 +18,7 @@ RTAWindow = Literal["hann", "blackman", "boxcar"]
 class RTAConfig:
     band: FrequencyBand = FrequencyBand()
     points: int = 31
-    smoothing_width: float = 1.0 / 3.0
+    smoothing_width: float = 0.1
     smoothing_window: SmoothingWindow = SmoothingWindow.GAUSSIAN
     fft_window: RTAWindow = "hann"
 

@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from dataclasses import dataclass
 import math
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.optimize import curve_fit
+from scipy.signal import ShortTimeFFT
 
+from .generators import extend_log_sweep_band
 from .types import ASignal, FrequencyBand
 
 
 THD_SWEEP_AMPLITUDE = 0.9
-THD_FADE_SECONDS = 0.5
-FALLBACK_MASK_RATIO = 5.0 / 4.0
 
 
 @dataclass(frozen=True)
@@ -28,16 +26,17 @@ class THDResult:
 
 @dataclass(frozen=True)
 class SemiAnalogTHDConfig:
-    """Settings for the moving-notch, swept-sine THD+N method."""
+    """Settings for the swept-sine residual/total THD+N method."""
 
     sample_rate: int = 96_000
     duration: float = 30.0
     band: FrequencyBand = FrequencyBand()
-    smoothing_octaves: float = 1.0 / 3.0
+    smoothing_octaves: float = 0.1
     segment_seconds: float = 1.0
     overlap: float = 0.9
-    sweep_band_expansion: float = 1.5
-    mask_expansion: float = 2.0
+    fade_in_seconds: float = 0.5
+    fade_out_seconds: float = 0.5
+    notch_ratio: float = 1.5
     points: int = 1_200
 
     def validate(self) -> None:
@@ -56,19 +55,22 @@ class SemiAnalogTHDConfig:
             raise ValueError("STFT overlap must be in the 0..1 range")
         if self.hop_size < 1:
             raise ValueError("STFT overlap leaves no samples between frames")
-        if self.sweep_band_expansion <= 1.0:
-            raise ValueError("Sweep band expansion must be greater than one")
-        if self.mask_expansion <= 0:
-            raise ValueError("Mask expansion must be positive")
+        if self.fade_in_seconds < 0.0 or self.fade_out_seconds < 0.0:
+            raise ValueError("Sweep fades must not be negative")
+        if self.notch_ratio <= 1.0:
+            raise ValueError("Rejection window ratio must be greater than one")
         if self.points < 3:
             raise ValueError("Point count must be at least three")
-        low, high = self.sweep_band
-        if low <= 0 or high <= self.band.high:
-            raise ValueError("Sample rate leaves no room above the analysis band")
+        if self.sweep_band[1] >= self.sample_rate / 2.0:
+            raise ValueError("Sample rate leaves no room for the requested fade-out")
 
     @property
     def sample_count(self) -> int:
-        return int(round(self.duration * self.sample_rate))
+        return int(round(self.total_duration * self.sample_rate))
+
+    @property
+    def total_duration(self) -> float:
+        return self.fade_in_seconds + self.duration + self.fade_out_seconds
 
     @property
     def segment_size(self) -> int:
@@ -80,27 +82,12 @@ class SemiAnalogTHDConfig:
 
     @property
     def sweep_band(self) -> tuple[float, float]:
-        return (
-            self.band.low / self.sweep_band_expansion,
-            min(
-                self.band.high * self.sweep_band_expansion,
-                self.sample_rate * 0.49,
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class THDMaskCalibration:
-    center_frequency: NDArray[np.float64]
-    left_edge: NDArray[np.float64]
-    right_edge: NDArray[np.float64]
-
-
-@dataclass(frozen=True)
-class THDMaskFit:
-    left_params: NDArray[np.float64]
-    right_params: NDArray[np.float64]
-    leakage_ratio: float
+        return extend_log_sweep_band(
+            self.band,
+            self.duration,
+            self.fade_in_seconds,
+            self.fade_out_seconds,
+        ).as_tuple()
 
 
 @dataclass(frozen=True)
@@ -110,7 +97,7 @@ class SemiAnalogTHDResult:
     integrated_ratio: float
     tracked_time: NDArray[np.float64]
     tracked_frequency: NDArray[np.float64]
-    main_energy: NDArray[np.float64]
+    total_energy: NDArray[np.float64]
     residual_energy: NDArray[np.float64]
 
     @property
@@ -123,12 +110,11 @@ class SemiAnalogTHDResult:
 
 
 @dataclass(frozen=True)
-class _EnergySplit:
-    frequency: NDArray[np.float64]
-    tracked_time: NDArray[np.float64]
-    tracked_frequency: NDArray[np.float64]
-    main_energy: NDArray[np.float64]
-    residual_energy: NDArray[np.float64]
+class _FrameEnergy:
+    time: NDArray[np.float64]
+    center_frequency: NDArray[np.float64]
+    total: NDArray[np.float64]
+    residual: NDArray[np.float64]
 
 
 def generate_semi_analog_thd_sweep(config: SemiAnalogTHDConfig) -> ASignal:
@@ -136,73 +122,75 @@ def generate_semi_analog_thd_sweep(config: SemiAnalogTHDConfig) -> ASignal:
     config.validate()
     start, stop = config.sweep_band
     time = np.arange(config.sample_count, dtype=np.float64) / config.sample_rate
-    sweep_rate = config.duration / math.log(stop / start)
+    sweep_rate = config.duration / math.log(config.band.high / config.band.low)
     phase = 2.0 * np.pi * start * sweep_rate * (
         np.exp(time / sweep_rate) - 1.0
     )
     signal = ASignal(THD_SWEEP_AMPLITUDE * np.sin(phase), config.sample_rate)
-    fade = min(
-        int(round(THD_FADE_SECONDS * config.sample_rate)),
-        config.sample_count // 4,
-    )
-    return signal.fade(in_=fade, out=fade).normalize(THD_SWEEP_AMPLITUDE)
+    fade_in = int(round(config.fade_in_seconds * config.sample_rate))
+    fade_out = int(round(config.fade_out_seconds * config.sample_rate))
+    return signal.fade(in_=fade_in, out=fade_out).normalize(THD_SWEEP_AMPLITUDE)
 
 
-def calibrate_semi_analog_thd_mask(
-    config: SemiAnalogTHDConfig,
-    clean_sweep: ASignal | None = None,
-) -> THDMaskFit:
-    """Fit a delay-independent fundamental mask from a clean digital sweep."""
-    config.validate()
-    sweep = clean_sweep or generate_semi_analog_thd_sweep(config)
-    clean = _mono_data(sweep, config)
-    calibration = _calibrate_mask(clean, config)
-    left_params = _fit_mask_side(calibration, config, side="left")
-    right_params = _fit_mask_side(calibration, config, side="right")
-    provisional = THDMaskFit(left_params, right_params, math.nan)
-    clean_split = _split_energy(clean, config, provisional)
-    leakage = _integrated_ratio(
-        clean_split.residual_energy,
-        clean_split.main_energy,
+def fundamental_rejection_response(
+    frequency: NDArray[np.floating],
+    center_frequency: float,
+    ratio: float = 1.5,
+) -> NDArray[np.float64]:
+    """Return a flat rejection window from ``f0 / ratio`` to ``f0 * ratio``."""
+    frequency = np.asarray(frequency, dtype=np.float64)
+    if frequency.ndim != 1:
+        raise ValueError("Filter frequencies must be one-dimensional")
+    if np.any(frequency < 0.0):
+        raise ValueError("Filter frequencies must be non-negative")
+    if center_frequency <= 0.0:
+        raise ValueError("Center frequency must be positive")
+    if ratio <= 1.0:
+        raise ValueError("Rejection window ratio must be greater than one")
+    response = np.ones_like(frequency)
+    rejected = (frequency >= center_frequency / ratio) & (
+        frequency <= center_frequency * ratio
     )
-    return THDMaskFit(left_params, right_params, leakage)
+    response[rejected] = 0.0
+    return response
 
 
 def analyze_semi_analog_thd(
     recording: ASignal,
     config: SemiAnalogTHDConfig,
-    *,
-    mask_fit: THDMaskFit | None = None,
 ) -> SemiAnalogTHDResult:
-    """Calculate frequency-resolved THD+N from channel 1 of a sweep recording."""
+    """Calculate IEC residual/total THD+N from logical input channel A."""
     config.validate()
     signal = _mono_data(recording, config)
-    fitted_mask = mask_fit or calibrate_semi_analog_thd_mask(config)
-    split = _split_energy(signal, config, fitted_mask)
-    band = (
-        (split.frequency >= config.band.low)
-        & (split.frequency <= config.band.high)
+    frames = _analyze_frames(signal, config)
+    selected = (
+        (frames.center_frequency >= config.band.low)
+        & (frames.center_frequency <= config.band.high)
+        & (frames.total > np.finfo(np.float64).tiny)
     )
-    raw_ratio = _power_ratio(
-        split.residual_energy[band],
-        split.main_energy[band],
-    )
+    if np.count_nonzero(selected) < 2:
+        raise ValueError("Not enough valid sweep frames in the analysis band")
+
+    tracked_frequency = frames.center_frequency[selected]
+    total_energy = frames.total[selected]
+    residual_energy = frames.residual[selected]
+    raw_ratio = np.sqrt(residual_energy / total_energy)
     frequency, ratio = _smooth_log_ratio(
-        split.frequency[band],
+        tracked_frequency,
         raw_ratio,
         config,
+    )
+    integrated_ratio = math.sqrt(
+        float(np.sum(residual_energy)) / float(np.sum(total_energy))
     )
     return SemiAnalogTHDResult(
         frequency=frequency,
         ratio=ratio,
-        integrated_ratio=_integrated_ratio(
-            split.residual_energy,
-            split.main_energy,
-        ),
-        tracked_time=split.tracked_time,
-        tracked_frequency=split.tracked_frequency,
-        main_energy=split.main_energy,
-        residual_energy=split.residual_energy,
+        integrated_ratio=integrated_ratio,
+        tracked_time=frames.time[selected],
+        tracked_frequency=tracked_frequency,
+        total_energy=total_energy,
+        residual_energy=residual_energy,
     )
 
 
@@ -246,128 +234,48 @@ def thd_from_spectrum(
     )
 
 
-def _calibrate_mask(
+def _analyze_frames(
     signal: NDArray[np.float64],
     config: SemiAnalogTHDConfig,
-) -> THDMaskCalibration:
-    frequency = np.fft.rfftfreq(config.segment_size, 1.0 / config.sample_rate)
-    centers: list[float] = []
-    left_edges: list[float] = []
-    right_edges: list[float] = []
-    for _time, power in _power_frames(signal, config):
-        peak_index = 1 + int(np.argmax(power[1:]))
-        threshold = float(np.mean(power))
-        left_index = peak_index
-        while left_index > 1 and power[left_index] > threshold:
-            left_index -= 1
-        right_index = peak_index
-        while right_index < len(frequency) - 1 and power[right_index] > threshold:
-            right_index += 1
-
-        center = float(frequency[peak_index])
-        if not config.band.low / 2.0 <= center <= config.band.high * 2.0:
-            continue
-        centers.append(center)
-        left_edges.append(
-            max(
-                config.band.low,
-                center
-                - config.mask_expansion * (center - float(frequency[left_index])),
-            )
-        )
-        right_edges.append(
-            min(
-                config.band.high,
-                center
-                + config.mask_expansion * (float(frequency[right_index]) - center),
-            )
-        )
-    if len(centers) < 6:
-        raise ValueError("Not enough sweep frames to calibrate the THD mask")
-    return THDMaskCalibration(
-        np.asarray(centers, dtype=np.float64),
-        np.asarray(left_edges, dtype=np.float64),
-        np.asarray(right_edges, dtype=np.float64),
+) -> _FrameEnergy:
+    transform = ShortTimeFFT(
+        np.hanning(config.segment_size),
+        hop=config.hop_size,
+        fs=config.sample_rate,
+        fft_mode="onesided",
+        mfft=config.segment_size,
     )
-
-
-def _fit_mask_side(
-    calibration: THDMaskCalibration,
-    config: SemiAnalogTHDConfig,
-    *,
-    side: str,
-) -> NDArray[np.float64]:
-    centers = calibration.center_frequency
-    if side == "left":
-        ratio = centers / calibration.left_edge
-        selected = (centers >= config.band.low * 2.0) & (
-            centers <= config.band.high
-        )
-    else:
-        ratio = calibration.right_edge / centers
-        selected = (centers >= config.band.low) & (
-            centers <= config.band.high / 2.0
-        )
-    if np.count_nonzero(selected) < 3:
-        raise ValueError(f"Not enough sweep frames to fit the {side} THD mask")
-    lower = (0.0, 1.0 / config.band.low + 1e-9, 1.0)
-    upper = (10.0, 10.0, 3.0)
-    params, _ = curve_fit(
-        _reciprocal_log_model,
-        centers[selected],
-        ratio[selected],
-        p0=(1.0, 1.0, 1.05),
-        bounds=(lower, upper),
-        maxfev=20_000,
+    spectrum = np.asarray(transform.stft(signal).T)
+    frequency = np.asarray(transform.f, dtype=np.float64)
+    time = np.asarray(transform.t(len(signal)), dtype=np.float64)
+    complete = (
+        (time >= config.segment_seconds / 2.0)
+        & (time <= len(signal) / config.sample_rate - config.segment_seconds / 2.0)
     )
-    return np.asarray(params, dtype=np.float64)
+    frame_indices = np.flatnonzero(complete)
+    if not len(frame_indices):
+        raise ValueError("The recording contains no complete STFT frames")
+    selected_spectrum = spectrum[frame_indices]
+    power = np.asarray(np.square(np.abs(selected_spectrum)), dtype=np.float64)
+    peak_indices = 1 + np.argmax(power[:, 1:], axis=1)
+    centers = frequency[peak_indices]
 
-
-def _split_energy(
-    signal: NDArray[np.float64],
-    config: SemiAnalogTHDConfig,
-    mask_fit: THDMaskFit,
-) -> _EnergySplit:
-    frequency = np.fft.rfftfreq(config.segment_size, 1.0 / config.sample_rate)
-    band = (frequency >= config.band.low) & (frequency <= config.band.high)
-    main = np.zeros_like(frequency)
-    residual = np.zeros_like(frequency)
-    times: list[float] = []
-    centers: list[float] = []
-    for frame_time, power in _power_frames(signal, config):
-        peak_index = 1 + int(np.argmax(power[1:]))
-        center = float(frequency[peak_index])
-        left, right = _fitted_mask_edges(center, mask_fit, config)
-        main_mask = band & (frequency >= left) & (frequency <= right)
-        main[main_mask] += power[main_mask]
-        residual[band & ~main_mask] += power[band & ~main_mask]
-        times.append(frame_time)
-        centers.append(center)
-    return _EnergySplit(
-        frequency,
-        np.asarray(times, dtype=np.float64),
-        np.asarray(centers, dtype=np.float64),
-        main,
-        residual,
-    )
-
-
-def _power_frames(
-    signal: NDArray[np.float64],
-    config: SemiAnalogTHDConfig,
-) -> Iterator[tuple[float, NDArray[np.float64]]]:
-    """Yield centered, zero-padded Hann-window power spectra one frame at a time."""
-    size = config.segment_size
-    hop = config.hop_size
-    before = size // 2
-    after = size - before
-    padded = np.pad(signal, (before, after))
-    window = np.hanning(size)
-    for start in range(0, len(padded) - size + 1, hop):
-        frame = padded[start : start + size]
-        power = np.square(np.abs(np.fft.rfft(frame * window)))
-        center_sample = start + size / 2.0 - before
-        yield center_sample / config.sample_rate, power
+    # Restore the energy represented by the omitted negative-frequency bins.
+    parseval_weight = np.full(len(frequency), 2.0, dtype=np.float64)
+    parseval_weight[0] = 0.0
+    if np.isclose(frequency[-1], config.sample_rate / 2.0):
+        parseval_weight[-1] = 0.0
+    power *= parseval_weight[None, :]
+    total = np.sum(power, axis=1)
+    residual = np.empty(len(centers), dtype=np.float64)
+    for index, center in enumerate(centers):
+        response = fundamental_rejection_response(
+            frequency,
+            float(center),
+            config.notch_ratio,
+        )
+        residual[index] = float(np.sum(power[index] * np.square(response)))
+    return _FrameEnergy(time[frame_indices], centers, total, residual)
 
 
 def _smooth_log_ratio(
@@ -375,69 +283,23 @@ def _smooth_log_ratio(
     ratio: NDArray[np.float64],
     config: SemiAnalogTHDConfig,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    order = np.argsort(frequency)
+    sorted_frequency = frequency[order]
+    sorted_power = np.square(ratio[order])
     output = np.geomspace(config.band.low, config.band.high, config.points)
-    log_frequency = np.log2(frequency)
+    log_frequency = np.log2(sorted_frequency)
+    log_output = np.log2(output)
     half_width = config.smoothing_octaves / 2.0
-    power = np.square(ratio)
-    smoothed = np.full(output.shape, np.nan, dtype=np.float64)
-    for index, center in enumerate(output):
-        selected = (
-            (log_frequency >= math.log2(center) - half_width)
-            & (log_frequency <= math.log2(center) + half_width)
-            & np.isfinite(power)
-        )
-        if np.any(selected):
-            smoothed[index] = math.sqrt(float(np.mean(power[selected])))
-    return output, smoothed
-
-
-def _fitted_mask_edges(
-    frequency: float,
-    mask_fit: THDMaskFit,
-    config: SemiAnalogTHDConfig,
-) -> tuple[float, float]:
-    if frequency <= 0:
-        return config.band.low, config.band.low
-    left_ratio = float(_reciprocal_log_model(frequency, *mask_fit.left_params))
-    right_ratio = float(_reciprocal_log_model(frequency, *mask_fit.right_params))
-    if not np.isfinite(left_ratio) or left_ratio <= 0:
-        left_ratio = FALLBACK_MASK_RATIO
-    if not np.isfinite(right_ratio) or right_ratio <= 0:
-        right_ratio = FALLBACK_MASK_RATIO
-    return (
-        max(config.band.low, frequency / left_ratio),
-        min(config.band.high, frequency * right_ratio),
-    )
-
-
-def _reciprocal_log_model(
-    frequency: float | NDArray[np.float64],
-    a: float,
-    b: float,
-    c: float,
-) -> NDArray[np.float64]:
-    values = np.asarray(frequency, dtype=np.float64)
-    return a / np.log(b * values) + c
-
-
-def _power_ratio(
-    residual_energy: NDArray[np.float64],
-    main_energy: NDArray[np.float64],
-) -> NDArray[np.float64]:
-    ratio = np.full(main_energy.shape, np.nan, dtype=np.float64)
-    valid = main_energy > np.finfo(np.float64).tiny
-    ratio[valid] = np.sqrt(residual_energy[valid] / main_energy[valid])
-    return ratio
-
-
-def _integrated_ratio(
-    residual_energy: NDArray[np.float64],
-    main_energy: NDArray[np.float64],
-) -> float:
-    main = float(np.sum(main_energy))
-    if main <= np.finfo(np.float64).tiny:
-        raise ValueError("The recording contains no tracked fundamental energy")
-    return math.sqrt(float(np.sum(residual_energy)) / main)
+    smoothed_power = np.empty_like(output)
+    for index, center in enumerate(log_output):
+        left = int(np.searchsorted(log_frequency, center - half_width))
+        right = int(np.searchsorted(log_frequency, center + half_width))
+        if left == right:
+            nearest = int(np.argmin(np.abs(log_frequency - center)))
+            smoothed_power[index] = sorted_power[nearest]
+        else:
+            smoothed_power[index] = float(np.mean(sorted_power[left:right]))
+    return output, np.sqrt(smoothed_power)
 
 
 def _mono_data(signal: ASignal, config: SemiAnalogTHDConfig) -> NDArray[np.float64]:

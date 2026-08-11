@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING, Any
 
 import dearpygui.dearpygui as dpg
 
+from spectrum_app.core.model import PlotType
 from spectrum_app.gui.controls import LevelMeter, add_level_meter
 
 if TYPE_CHECKING:
@@ -138,7 +139,7 @@ class RTAView:
                 labels=("A", "B"),
                 height_offset=-20,
             )
-        self._set_smoothing_visibility(int(state["points"]))
+        self.update_smoothing_visibility(int(state["points"]))
         self.update_levels((0.0, 0.0))
 
     def destroy(self) -> None:
@@ -160,9 +161,12 @@ class RTAView:
         if self.level_meter is not None:
             self.level_meter.set_levels(*levels)
 
-    def _set_smoothing_visibility(self, points: int) -> None:
+    def update_smoothing_visibility(self, points: int) -> None:
         if dpg.does_item_exist(self.SMOOTHING_GROUP):
-            dpg.configure_item(self.SMOOTHING_GROUP, show=points >= 100)
+            dpg.configure_item(
+                self.SMOOTHING_GROUP,
+                show=self.module._effective_plot_type(points) == PlotType.LINE,
+            )
 
     def _set_noise(self, sender, value: bool, user_data=None) -> None:
         dpg.set_value(sender, self.module.set_setting("noise", value))
@@ -183,7 +187,7 @@ class RTAView:
     def _set_points(self, sender, value: int, user_data=None) -> None:
         points = self.module.set_setting("points", value)
         dpg.set_value(sender, points)
-        self._set_smoothing_visibility(points)
+        self.update_smoothing_visibility(points)
 
     def _set_smoothing(self, sender, value: float, user_data=None) -> None:
         dpg.set_value(

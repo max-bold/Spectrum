@@ -2,6 +2,7 @@
 
 from .audioio import AudioDevice, list_devices, play_and_record
 from .generators import (
+    extend_log_sweep_band,
     log_chirp,
     pink_noise,
     pinking_sos,
@@ -68,11 +69,9 @@ from .spectrum import (
 from .thd import (
     SemiAnalogTHDConfig,
     SemiAnalogTHDResult,
-    THDMaskCalibration,
-    THDMaskFit,
     THDResult,
     analyze_semi_analog_thd,
-    calibrate_semi_analog_thd_mask,
+    fundamental_rejection_response,
     generate_semi_analog_thd_sweep,
     thd_from_spectrum,
 )
@@ -99,8 +98,6 @@ __all__ = [
     "SpiceTableValues",
     "SemiAnalogTHDConfig",
     "SemiAnalogTHDResult",
-    "THDMaskCalibration",
-    "THDMaskFit",
     "THDResult",
     "ChannelCalibration",
     "ReferenceCalibration",
@@ -117,11 +114,12 @@ __all__ = [
     "calculate_calibration_impedance",
     "calculate_channel_correction",
     "calculate_impedance",
-    "calibrate_semi_analog_thd_mask",
     "channel_calibration_config",
     "current_phase_angle",
     "estimate_reference_resistor",
     "estimate_phase_delay",
+    "extend_log_sweep_band",
+    "fundamental_rejection_response",
     "fit_impedance",
     "fit_impedance_auto",
     "format_spice_table",

@@ -6,6 +6,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+WINDOW_EDGE_DB = -30.0
+WINDOW_EDGE_WEIGHT = 10.0 ** (WINDOW_EDGE_DB / 10.0)
+
+
 class SmoothingWindow(str, Enum):
     FLAT = "flat"
     COSINE = "cosine"
@@ -17,13 +21,17 @@ class SmoothingWindow(str, Enum):
         return [item.value for item in cls]
 
 
-def log_window(
+def log_window_old(
     window: SmoothingWindow,
     center_frequency: float,
     frequency_step: float,
     width: float,
 ) -> tuple[NDArray[np.float64], int, int]:
-    """Build a logarithmic smoothing window centered at a frequency."""
+    """Build a window with the original pre-FWHM width semantics.
+
+    This legacy implementation is retained for numerical and visual comparisons.
+    New smoothing code should use :func:`log_window`.
+    """
     if center_frequency <= 0:
         raise ValueError("Center frequency must be positive")
     if frequency_step <= 0:
@@ -54,13 +62,100 @@ def log_window(
     return weights.astype(np.float64, copy=False), start_index, end_index
 
 
+def log_window(
+    window: SmoothingWindow,
+    center_frequency: float,
+    frequency_step: float,
+    width: float,
+    *,
+    frequency_start: float = 0.0,
+) -> tuple[NDArray[np.float64], int, int]:
+    """Build a logarithmic smoothing window centered at a frequency.
+
+    ``width`` is the full width at half maximum (FWHM), measured in octaves.
+    Tapered windows are truncated where their weight reaches approximately
+    :data:`WINDOW_EDGE_DB`. A flat window is the discontinuous exception: its
+    support is exactly ``width`` octaves and drops directly from one to zero.
+    """
+    if center_frequency <= 0:
+        raise ValueError("Center frequency must be positive")
+    if frequency_step <= 0:
+        raise ValueError("Frequency step must be positive")
+    if width <= 0:
+        raise ValueError("Window width must be positive")
+
+    radius = _log_window_radius(window, width)
+    low = center_frequency / (2.0**radius)
+    high = center_frequency * (2.0**radius)
+    start_index = int(np.ceil((low - frequency_start) / frequency_step))
+    end_index = int(np.ceil((high - frequency_start) / frequency_step))
+    if end_index <= start_index:
+        start_index = int(
+            np.rint((center_frequency - frequency_start) / frequency_step)
+        )
+        end_index = start_index + 1
+
+    frequencies = frequency_start + np.arange(
+        start_index,
+        end_index,
+        dtype=np.float64,
+    ) * frequency_step
+    positive = frequencies > 0.0
+    if not np.all(positive):
+        first_positive = (
+            int(np.flatnonzero(positive)[0]) if np.any(positive) else 0
+        )
+        frequencies = frequencies[first_positive:]
+        start_index += first_positive
+    if len(frequencies) == 0:
+        return np.empty(0, dtype=np.float64), start_index, start_index
+
+    log_frequencies = np.log2(frequencies) - np.log2(center_frequency)
+    weights = _log_window_weights(window, log_frequencies, width)
+    end_index = start_index + len(weights)
+    return weights.astype(np.float64, copy=False), start_index, end_index
+
+
+def _log_window_radius(window: SmoothingWindow, width: float) -> float:
+    """Return the half-support in octaves for an FWHM window."""
+    if window == SmoothingWindow.FLAT:
+        return width / 2.0
+    if window == SmoothingWindow.GAUSSIAN:
+        sigma = width / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        return float(sigma * np.sqrt(-2.0 * np.log(WINDOW_EDGE_WEIGHT)))
+    if window == SmoothingWindow.COSINE:
+        return float(width / np.pi * np.arccos(2.0 * WINDOW_EDGE_WEIGHT - 1.0))
+    if window == SmoothingWindow.TRIANGULAR:
+        return width * (1.0 - WINDOW_EDGE_WEIGHT)
+    raise ValueError(f"Unknown smoothing window: {window}")
+
+
+def _log_window_weights(
+    window: SmoothingWindow,
+    log_frequencies: NDArray[np.float64],
+    width: float,
+) -> NDArray[np.float64]:
+    """Evaluate an FWHM-normalized window at logarithmic offsets."""
+    if window == SmoothingWindow.FLAT:
+        return np.ones_like(log_frequencies)
+    if window == SmoothingWindow.GAUSSIAN:
+        return np.exp(-4.0 * np.log(2.0) * (log_frequencies / width) ** 2)
+    if window == SmoothingWindow.COSINE:
+        weights = np.cos(np.pi * log_frequencies / width) / 2.0 + 0.5
+        return np.clip(weights, 0.0, None)
+    if window == SmoothingWindow.TRIANGULAR:
+        weights = 1.0 - np.abs(log_frequencies) / width
+        return np.clip(weights, 0.0, None)
+    raise ValueError(f"Unknown smoothing window: {window}")
+
+
 def log_smooth(
     frequency: NDArray[np.floating],
     values: NDArray[np.number],
     *,
     band: tuple[float, float] = (20.0, 20_000.0),
     window: SmoothingWindow = SmoothingWindow.GAUSSIAN,
-    width: float = 1 / 3,
+    width: float = 0.1,
     points: int = 256,
 ) -> tuple[NDArray[np.float64], NDArray[np.number]]:
     """Smooth linearly spaced spectrum values onto a logarithmic frequency axis."""
@@ -76,7 +171,7 @@ def grid_smooth(
     grid: NDArray[np.floating],
     *,
     window: SmoothingWindow = SmoothingWindow.GAUSSIAN,
-    width: float = 1 / 3,
+    width: float = 0.1,
 ) -> NDArray[np.number]:
     """Smooth spectrum values using logarithmic windows centered on ``grid``."""
     frequency = np.asarray(frequency, dtype=np.float64)
@@ -111,15 +206,21 @@ def _grid_smooth_real(
             float(center_frequency),
             frequency_step,
             width,
+            frequency_start=float(frequency[0]),
         )
         clipped = _clip_window(start_index, end_index, len(frequency))
         if clipped is None:
             continue
         data_start, data_end, weight_start, weight_end = clipped
+        smoothing_weights = weights[weight_start:weight_end]
+        # FFT bins are uniformly spaced in hertz while the window is defined
+        # in log-frequency. The Jacobian converts the weighted average to a
+        # uniform measure in log(frequency).
+        smoothing_weights = smoothing_weights / frequency[data_start:data_end]
         result[index] = np.average(
             values[data_start:data_end],
             axis=0,
-            weights=weights[weight_start:weight_end],
+            weights=smoothing_weights,
         )
     return result
 

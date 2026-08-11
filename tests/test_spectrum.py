@@ -11,6 +11,7 @@ from audioanalysis import (
     SpectrumConfig,
     analyze_spectrum,
     calculate_power_spectrum,
+    extend_log_sweep_band,
     log_chirp,
     pink_noise,
     pinking_sos,
@@ -98,6 +99,25 @@ class SpectrumAnalysisTests(unittest.TestCase):
         self.assertEqual(
             FrequencyBand(30.0, 18_000.0),
             FrequencyBand((30.0, 18_000.0)),
+        )
+
+    def test_log_sweep_fades_are_extended_outside_the_working_band(self) -> None:
+        band = FrequencyBand(20.0, 20_000.0)
+        duration = 20.0
+        fade = 0.5
+
+        extended = extend_log_sweep_band(band, duration, fade, fade)
+        sweep_rate = np.log(extended.high / extended.low) / (
+            duration + 2.0 * fade
+        )
+
+        self.assertAlmostEqual(
+            extended.low * np.exp(sweep_rate * fade),
+            band.low,
+        )
+        self.assertAlmostEqual(
+            extended.low * np.exp(sweep_rate * (fade + duration)),
+            band.high,
         )
 
     def test_generators_are_mono_and_pink_noise_always_returns_state(self) -> None:

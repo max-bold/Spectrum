@@ -16,8 +16,9 @@ class THDSettings:
     MODULE_ID = "thd"
     DEFAULT_SEGMENT_SECONDS = 1.0
     DEFAULT_OVERLAP_PERCENT = 90.0
-    DEFAULT_SWEEP_BAND_EXPANSION = 1.5
-    DEFAULT_MASK_EXPANSION = 2.0
+    DEFAULT_FADE_IN_SECONDS = 0.5
+    DEFAULT_FADE_OUT_SECONDS = 0.5
+    DEFAULT_NOTCH_RATIO = 1.5
     DEFAULT_POINTS = 1_200
 
     def __init__(
@@ -61,35 +62,51 @@ class THDSettings:
         )
 
     @property
-    def sweep_band_expansion(self) -> float:
+    def fade_in_seconds(self) -> float:
         return self._float_setting(
-            "sweep_band_expansion",
-            self.DEFAULT_SWEEP_BAND_EXPANSION,
+            "fade_in_seconds",
+            self.DEFAULT_FADE_IN_SECONDS,
+            minimum=0.0,
+            maximum=10.0,
+        )
+
+    @fade_in_seconds.setter
+    def fade_in_seconds(self, value: float) -> None:
+        self._set(
+            "fade_in_seconds",
+            self._normalize_float(value, 0.0, 10.0),
+        )
+
+    @property
+    def fade_out_seconds(self) -> float:
+        return self._float_setting(
+            "fade_out_seconds",
+            self.DEFAULT_FADE_OUT_SECONDS,
+            minimum=0.0,
+            maximum=10.0,
+        )
+
+    @fade_out_seconds.setter
+    def fade_out_seconds(self, value: float) -> None:
+        self._set(
+            "fade_out_seconds",
+            self._normalize_float(value, 0.0, 10.0),
+        )
+
+    @property
+    def notch_ratio(self) -> float:
+        return self._float_setting(
+            "notch_ratio",
+            self.DEFAULT_NOTCH_RATIO,
             minimum=1.01,
             maximum=4.0,
         )
 
-    @sweep_band_expansion.setter
-    def sweep_band_expansion(self, value: float) -> None:
+    @notch_ratio.setter
+    def notch_ratio(self, value: float) -> None:
         self._set(
-            "sweep_band_expansion",
+            "notch_ratio",
             self._normalize_float(value, 1.01, 4.0),
-        )
-
-    @property
-    def mask_expansion(self) -> float:
-        return self._float_setting(
-            "mask_expansion",
-            self.DEFAULT_MASK_EXPANSION,
-            minimum=0.1,
-            maximum=10.0,
-        )
-
-    @mask_expansion.setter
-    def mask_expansion(self, value: float) -> None:
-        self._set(
-            "mask_expansion",
-            self._normalize_float(value, 0.1, 10.0),
         )
 
     @property
@@ -136,7 +153,7 @@ class THDSettings:
 
 class THDSettingsWindow:
     WIDTH = 480
-    HEIGHT = 360
+    HEIGHT = 400
     TAG = "module::thd::settings"
     MENU_ITEM = "module::thd::settings_menu_item"
 
@@ -149,8 +166,9 @@ class THDSettingsWindow:
         self.settings = settings
         self.segment_seconds = "module::thd::settings::segment_seconds"
         self.overlap_percent = "module::thd::settings::overlap_percent"
-        self.sweep_band_expansion = "module::thd::settings::sweep_band_expansion"
-        self.mask_expansion = "module::thd::settings::mask_expansion"
+        self.fade_in_seconds = "module::thd::settings::fade_in_seconds"
+        self.fade_out_seconds = "module::thd::settings::fade_out_seconds"
+        self.notch_ratio = "module::thd::settings::notch_ratio"
         self.points = "module::thd::settings::points"
 
     def build(self) -> None:
@@ -188,21 +206,29 @@ class THDSettingsWindow:
                 callback=self._set_overlap_percent,
             )
             dpg.add_separator()
-            dpg.add_text("Sweep band expansion")
+            dpg.add_text("Fade in, s")
             dpg.add_input_float(
-                tag=self.sweep_band_expansion,
-                default_value=self.settings.sweep_band_expansion,
+                tag=self.fade_in_seconds,
+                default_value=self.settings.fade_in_seconds,
                 width=-1,
                 step=0.1,
-                callback=self._set_sweep_band_expansion,
+                callback=self._set_fade_in_seconds,
             )
-            dpg.add_text("Fundamental mask expansion")
+            dpg.add_text("Fade out, s")
             dpg.add_input_float(
-                tag=self.mask_expansion,
-                default_value=self.settings.mask_expansion,
+                tag=self.fade_out_seconds,
+                default_value=self.settings.fade_out_seconds,
                 width=-1,
                 step=0.1,
-                callback=self._set_mask_expansion,
+                callback=self._set_fade_out_seconds,
+            )
+            dpg.add_text("Rejection window ratio")
+            dpg.add_input_float(
+                tag=self.notch_ratio,
+                default_value=self.settings.notch_ratio,
+                width=-1,
+                step=0.1,
+                callback=self._set_notch_ratio,
             )
             dpg.add_text("Result points")
             dpg.add_input_int(
@@ -242,11 +268,9 @@ class THDSettingsWindow:
     def _sync_controls(self) -> None:
         dpg.set_value(self.segment_seconds, self.settings.segment_seconds)
         dpg.set_value(self.overlap_percent, self.settings.overlap_percent)
-        dpg.set_value(
-            self.sweep_band_expansion,
-            self.settings.sweep_band_expansion,
-        )
-        dpg.set_value(self.mask_expansion, self.settings.mask_expansion)
+        dpg.set_value(self.fade_in_seconds, self.settings.fade_in_seconds)
+        dpg.set_value(self.fade_out_seconds, self.settings.fade_out_seconds)
+        dpg.set_value(self.notch_ratio, self.settings.notch_ratio)
         dpg.set_value(self.points, self.settings.points)
 
     def _change_allowed(self) -> bool:
@@ -268,20 +292,20 @@ class THDSettingsWindow:
             self.settings.overlap_percent = value
             dpg.set_value(sender, self.settings.overlap_percent)
 
-    def _set_sweep_band_expansion(
-        self,
-        sender,
-        value: float,
-        user_data=None,
-    ) -> None:
+    def _set_fade_in_seconds(self, sender, value: float, user_data=None) -> None:
         if self._change_allowed():
-            self.settings.sweep_band_expansion = value
-            dpg.set_value(sender, self.settings.sweep_band_expansion)
+            self.settings.fade_in_seconds = value
+            dpg.set_value(sender, self.settings.fade_in_seconds)
 
-    def _set_mask_expansion(self, sender, value: float, user_data=None) -> None:
+    def _set_fade_out_seconds(self, sender, value: float, user_data=None) -> None:
         if self._change_allowed():
-            self.settings.mask_expansion = value
-            dpg.set_value(sender, self.settings.mask_expansion)
+            self.settings.fade_out_seconds = value
+            dpg.set_value(sender, self.settings.fade_out_seconds)
+
+    def _set_notch_ratio(self, sender, value: float, user_data=None) -> None:
+        if self._change_allowed():
+            self.settings.notch_ratio = value
+            dpg.set_value(sender, self.settings.notch_ratio)
 
     def _set_points(self, sender, value: int, user_data=None) -> None:
         if self._change_allowed():

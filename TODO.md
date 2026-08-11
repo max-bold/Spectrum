@@ -23,9 +23,10 @@ v0.3
 + Implement semi-analog swept THD+N calculation and display - done
 + Implement real-time analyzer mode
 + Implement impedance measurement mode
++ Automatically choose the RTA smoothing width from point count and band spacing
 
 v0.4
-- Automatically choose the RTA smoothing width from point count and band spacing
+- Investigate caching smoothing windows in `log_smooth()` and `grid_smooth()`; see [info/smoothing_window_cache.md](info/smoothing_window_cache.md)
 - Improve the delay-fitting algorithm for phase measurements
 - Implement multi-record mode with averaging
 

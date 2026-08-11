@@ -7,9 +7,7 @@ from audioanalysis import (
     ASignal,
     SemiAnalogTHDConfig,
     SemiAnalogTHDResult,
-    THDMaskFit,
     analyze_semi_analog_thd,
-    calibrate_semi_analog_thd_mask,
     generate_semi_analog_thd_sweep,
 )
 from spectrum_app.core.audio import CLIPPING_THRESHOLD, AudioInput, AudioOutput
@@ -25,8 +23,6 @@ AnalysisResponse = tuple[
     int,
     bool,
     SemiAnalogTHDResult | None,
-    THDMaskFit | None,
-    Signature,
     Signature,
     str | None,
 ]
@@ -93,7 +89,7 @@ class THDAcquisition(Thread):
                 round(
                     (
                         self.LEADING_SILENCE_SECONDS
-                        + self.output_config.duration
+                        + self.output_config.total_duration
                         + self.RECORDING_TAIL_SECONDS
                     )
                     * input_rate
@@ -206,8 +202,6 @@ class THDAnalyzer(Thread):
                 bool,
                 ASignal,
                 SemiAnalogTHDConfig,
-                THDMaskFit | None,
-                Signature,
                 Signature,
             ]
             | None
@@ -220,8 +214,6 @@ class THDAnalyzer(Thread):
         finishing: bool,
         recording: ASignal,
         config: SemiAnalogTHDConfig,
-        mask_fit: THDMaskFit | None,
-        mask_signature: Signature,
         analysis_signature: Signature,
     ) -> None:
         with self._condition:
@@ -230,8 +222,6 @@ class THDAnalyzer(Thread):
                 finishing,
                 recording,
                 config,
-                mask_fit,
-                mask_signature,
                 analysis_signature,
             )
             self._condition.notify()
@@ -267,23 +257,14 @@ class THDAnalyzer(Thread):
                 finishing,
                 recording,
                 config,
-                mask_fit,
-                mask_signature,
                 analysis_signature,
             ) = request
             try:
-                fitted_mask = mask_fit or calibrate_semi_analog_thd_mask(config)
-                result = analyze_semi_analog_thd(
-                    recording,
-                    config,
-                    mask_fit=fitted_mask,
-                )
+                result = analyze_semi_analog_thd(recording, config)
                 response: AnalysisResponse = (
                     revision,
                     finishing,
                     result,
-                    fitted_mask,
-                    mask_signature,
                     analysis_signature,
                     None,
                 )
@@ -292,8 +273,6 @@ class THDAnalyzer(Thread):
                     revision,
                     finishing,
                     None,
-                    None,
-                    mask_signature,
                     analysis_signature,
                     str(error) or error.__class__.__name__,
                 )

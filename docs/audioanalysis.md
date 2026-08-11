@@ -27,6 +27,17 @@ The package is intentionally split into pure analysis modules and optional audio
 - `audioanalysis.impedance_model` - SPICE-equivalent model fitting and table
   formatting. The automatic fit currently needs testing.
 
+## Logarithmic smoothing width
+
+`audioanalysis.smoothing.log_window()` and the smoothing helpers interpret
+`width` as the full width at half maximum (FWHM), in octaves. Tapered windows
+are truncated at approximately −30 dB (`weight = 0.001`). The flat window is
+the discontinuous exception: its support is exactly `width` octaves.
+
+`grid_smooth()` applies the logarithmic-frequency Jacobian when averaging a
+linearly spaced FFT grid. This keeps the window centered in log-frequency even
+though the source bins are uniformly spaced in hertz.
+
 Install locally while developing:
 
 ```bash

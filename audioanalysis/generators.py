@@ -34,6 +34,25 @@ PINKING_REFERENCE_SAMPLE_RATE = 44_100
 PINKING_GAIN_REFERENCE_FREQUENCY = 1_000.0
 
 
+def extend_log_sweep_band(
+    band: FrequencyBand,
+    duration: float,
+    fade_in: float,
+    fade_out: float,
+) -> FrequencyBand:
+    """Extend a logarithmic sweep so fades remain outside its working band."""
+    band.validate()
+    if duration <= 0.0:
+        raise ValueError("Sweep duration must be positive")
+    if fade_in < 0.0 or fade_out < 0.0:
+        raise ValueError("Sweep fades must not be negative")
+    frequency_ratio = band.high / band.low
+    return FrequencyBand(
+        band.low / frequency_ratio ** (fade_in / duration),
+        band.high * frequency_ratio ** (fade_out / duration),
+    )
+
+
 def log_chirp(
     samples: int,
     sample_rate: int = 44_100,
