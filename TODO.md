@@ -24,6 +24,7 @@ v0.3
 + Implement real-time analyzer mode
 + Implement impedance measurement mode
 + Automatically choose the RTA smoothing width from point count and band spacing
+- Investigate graph color changes when the list of visible graphs changes
 
 v0.4
 - Investigate caching smoothing windows in `log_smooth()` and `grid_smooth()`; see [info/smoothing_window_cache.md](info/smoothing_window_cache.md)
