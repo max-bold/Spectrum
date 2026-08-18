@@ -3,6 +3,8 @@
 import os
 import sys
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
 
 app_name = os.environ.get("APP_NAME", "BM_Spectrum")
 target_arch = os.environ.get("PYINSTALLER_TARGET_ARCH") or None
@@ -13,13 +15,18 @@ if target_arch not in {None, "x86_64", "arm64", "universal2"}:
         "PYINSTALLER_TARGET_ARCH must be one of: x86_64, arm64, universal2"
     )
 
+hidden_imports = collect_submodules("spectrum_app.modules")
+application_data = collect_data_files(
+    "spectrum_app",
+    includes=["gui/icons/*.png"],
+)
 
 a = Analysis(
     ["run.py"],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=application_data,
+    hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

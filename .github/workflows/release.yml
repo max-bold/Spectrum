@@ -51,8 +51,20 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
 
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
       - name: Build app
-        run: pyinstaller --clean --noconfirm BM_Spectrum_v0.2.spec
+        run: pyinstaller --clean --noconfirm BM_Spectrum.spec
+
+      - name: Verify bundled modules
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == windows-* ]]; then
+            "dist/${APP_NAME}.exe" --check-modules
+          else
+            "dist/${APP_NAME}.app/Contents/MacOS/${APP_NAME}" --check-modules
+          fi
 
       - name: Verify macOS binary architecture
         if: runner.os == 'macOS'

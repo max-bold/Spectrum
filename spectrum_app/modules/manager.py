@@ -1,5 +1,6 @@
 from importlib import import_module
 from pathlib import Path
+from pkgutil import iter_modules
 from types import ModuleType
 from typing import Any
 
@@ -18,6 +19,7 @@ class ModuleManager:
         path: Path | None = None,
         package: str = "spectrum_app.modules",
     ) -> None:
+        self._custom_path = path is not None
         self.path = path or Path(__file__).parent
         self.package = package
         self._modules: dict[str, BaseModule] = {}
@@ -38,10 +40,8 @@ class ModuleManager:
 
     def discover(self) -> None:
         discovered: dict[str, BaseModule] = {}
-        for directory in sorted(self.path.iterdir(), key=lambda item: item.name):
-            if not directory.is_dir() or not (directory / "__init__.py").is_file():
-                continue
-            package = import_module(f"{self.package}.{directory.name}")
+        for module_name in self._module_names():
+            package = import_module(f"{self.package}.{module_name}")
             module = self._create_module(package)
             if module.id in discovered:
                 raise ModuleLoadError(f"Duplicate module id: {module.id}")
@@ -49,6 +49,23 @@ class ModuleManager:
                 raise ModuleLoadError(f"Duplicate module name: {module.name}")
             discovered[module.id] = module
         self._modules = discovered
+
+    def _module_names(self) -> list[str]:
+        if self._custom_path:
+            return sorted(
+                directory.name
+                for directory in self.path.iterdir()
+                if directory.is_dir() and (directory / "__init__.py").is_file()
+            )
+        package = import_module(self.package)
+        package_path = getattr(package, "__path__", None)
+        if package_path is None:
+            raise ModuleLoadError(f"{self.package} is not a package")
+        registered = set(getattr(package, "BUILTIN_MODULE_NAMES", ()))
+        discovered = {
+            item.name for item in iter_modules(package_path) if item.ispkg
+        }
+        return sorted(registered | discovered)
 
     @staticmethod
     def _create_module(package: ModuleType) -> BaseModule:
