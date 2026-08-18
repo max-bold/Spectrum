@@ -52,6 +52,7 @@ class RTANoiseGenerator(Thread):
         fade_in: float,
         fade_out: float,
         on_clipping: ClippingCallback,
+        rng: np.random.Generator | None = None,
     ) -> None:
         super().__init__(name="rta-generator", daemon=True)
         self.sample_rate = sample_rate
@@ -69,7 +70,7 @@ class RTANoiseGenerator(Thread):
         self._abort_requested = False
         self._error: BaseException | None = None
         self._zi: NDArray[np.float64] | None = None
-        self._rng = np.random.default_rng()
+        self._rng = rng or np.random.default_rng()
         self._pre_position = 0
         self._noise_position = 0
         self._envelope_gain = 0.0 if self.fade_in_samples else 1.0

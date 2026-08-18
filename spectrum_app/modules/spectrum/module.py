@@ -11,6 +11,7 @@ from audioanalysis import (
     ReferenceMode,
     SmoothingWindow,
     SpectrumConfig,
+    extend_log_sweep_band,
 )
 
 from spectrum_app.core.model import AxisSpec, GraphData, Measurement
@@ -113,6 +114,10 @@ class SpectrumModule(BaseModule):
                 generator_mode=self.settings.generator_mode,
                 band=band,
                 duration=state["duration"],
+                pre_silence=self.settings.pre_silence,
+                post_silence=self.settings.post_silence,
+                fade_in=self.settings.fade_in,
+                fade_out=self.settings.fade_out,
                 online_interval=(
                     self.ONLINE_INTERVAL if self.settings.online_welch else None
                 ),
@@ -306,7 +311,7 @@ class SpectrumModule(BaseModule):
             self._view.update_levels(
                 times,
                 levels,
-                duration=float(measurement.module_state["duration"]),
+                duration=self._total_duration(measurement.module_state),
             )
 
     def _process_completion(
@@ -477,6 +482,7 @@ class SpectrumModule(BaseModule):
                 y=y,
                 x_axis=AxisSpec.FREQ,
                 y_axis=AxisSpec.LEVEL,
+                color=measurement.color_for_graph("Spectrum"),
             )
             measurement.graphs.append(graph)
         if graph.id not in self.app.app_state.visible_graph_ids:
@@ -496,6 +502,22 @@ class SpectrumModule(BaseModule):
             )
         band = FrequencyBand(*state["band"])
         band.validate(nyquist=min(input_rate, output_rate) / 2)
+        if self.settings.generator_mode == "log chirp":
+            extend_log_sweep_band(
+                band,
+                float(state["duration"]),
+                self.settings.fade_in,
+                self.settings.fade_out,
+            ).validate(nyquist=output_rate / 2)
+
+    def _total_duration(self, state: dict[str, Any]) -> float:
+        return (
+            self.settings.pre_silence
+            + self.settings.fade_in
+            + float(state["duration"])
+            + self.settings.fade_out
+            + self.settings.post_silence
+        )
 
     def _invalidate_analysis(self) -> None:
         self._analysis_revision += 1

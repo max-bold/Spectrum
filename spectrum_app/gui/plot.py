@@ -6,7 +6,13 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 
 from audioanalysis import break_phase_wraps, phase_derivative, wrap_phase
-from spectrum_app.core.model import AxisSpec, GraphData, Measurement, PlotType
+from spectrum_app.core.model import (
+    AxisSpec,
+    GraphColor,
+    GraphData,
+    Measurement,
+    PlotType,
+)
 from spectrum_app.core.plot_export import PlotExportError, PlotExporter
 
 if TYPE_CHECKING:
@@ -17,11 +23,10 @@ class Plot:
     EXPORT_WAIT_FRAMES = 2
     WATERMARK_TEXT = "BM Spectrum"
     WATERMARK_RIGHT_MARGIN = 36
+    WATERMARK_RIGHT_AXIS_MARGIN = 52
     WATERMARK_TOP_MARGIN = 20
     WATERMARK_COLOR = (180, 180, 180, 110)
     WATERMARK_SIZE = 15
-    BAR_COLOR = (70, 145, 215, 210)
-    BAR_FILL = (70, 145, 215, 140)
     WATERMARK_BLOCKING_ITEM_TYPES = {
         "mvAppItemType::mvWindowAppItem",
         "mvAppItemType::mvFileDialog",
@@ -37,6 +42,7 @@ class Plot:
         self.app = app
         self.tag = "app::plot"
         self.x_axis = "app::plot::x_axis"
+        self.legend = "app::plot::legend"
         self.watermark_layer = "app::plot::watermark_layer"
         self.watermark = "app::plot::watermark"
         self.y_axes = [
@@ -45,11 +51,19 @@ class Plot:
             "app::plot::y_axis_3",
         ]
         self.series_tags: list[str] = []
-        self._series_layout: dict[str, tuple[int | str, PlotType]] = {}
+        self._series_labels: dict[str, str] = {}
+        self._series_layout: dict[
+            str,
+            tuple[int | str, PlotType, GraphColor],
+        ] = {}
         self._bar_data: dict[
             str,
-            tuple[np.ndarray, np.ndarray, int | str, float],
+            tuple[np.ndarray, np.ndarray, int | str, float, GraphColor],
         ] = {}
+        self._color_themes: dict[GraphColor, str] = {}
+        self._axis_layout: list[tuple[object, ...] | None] = [
+            None for _ in self.y_axes
+        ]
         self._topology: tuple[tuple[str, AxisSpec, PlotType], ...] = ()
         self._pending_axis_fits: set[AxisSpec] = set()
         self.axis_warning = "app::plot::axis_warning"
@@ -58,6 +72,7 @@ class Plot:
         self.exporter = PlotExporter()
         self._pending_export_path: Path | None = None
         self._export_wait_frames = 0
+        self._legend_initialized = False
         self._built = False
 
     def build(self, width: int, height: int) -> None:
@@ -66,7 +81,11 @@ class Plot:
             height=height,
             tag=self.tag,
         ):
-            dpg.add_plot_legend()
+            dpg.add_plot_legend(
+                tag=self.legend,
+                show=True,
+                location=dpg.mvPlot_Location_NorthWest,
+            )
             dpg.add_plot_axis(
                 dpg.mvXAxis,
                 label="Frequency [Hz]",
@@ -187,10 +206,18 @@ class Plot:
             return
 
         text_width, _ = dpg.get_text_size(self.WATERMARK_TEXT)
+        visible_axis_count = len(
+            {axis_spec for _, axis_spec, _ in self._topology}
+        )
+        opposite_axis_count = max(0, visible_axis_count - 1)
+        right_margin = (
+            self.WATERMARK_RIGHT_MARGIN
+            + opposite_axis_count * self.WATERMARK_RIGHT_AXIS_MARGIN
+        )
         dpg.configure_item(
             self.watermark,
             pos=(
-                float(rect_max[0] - text_width - self.WATERMARK_RIGHT_MARGIN),
+                float(rect_max[0] - text_width - right_margin),
                 float(rect_min[1] + self.WATERMARK_TOP_MARGIN),
             ),
             show=True,
@@ -252,22 +279,38 @@ class Plot:
                 dpg.delete_item(series_tag)
                 self.series_tags.remove(series_tag)
                 self._series_layout.pop(series_tag, None)
+                self._series_labels.pop(series_tag, None)
                 self._bar_data.pop(series_tag, None)
 
+        axis_layout_changed = False
         for index, axis_tag in enumerate(self.y_axes):
             if index >= len(visible_axis_specs):
-                dpg.configure_item(axis_tag, show=False)
+                layout: tuple[object, ...] = (False,)
+                if self._axis_layout[index] != layout:
+                    dpg.configure_item(axis_tag, show=False)
+                    self._axis_layout[index] = layout
+                    axis_layout_changed = True
                 continue
 
             axis_spec = visible_axis_specs[index]
-            dpg.configure_item(
-                axis_tag,
-                show=True,
-                label=self._axis_label(axis_spec),
-                scale=self._axis_scale(axis_spec),
-                opposite=index > 0,
-                no_side_switch=True,
+            layout = (
+                True,
+                axis_spec,
+                self._axis_label(axis_spec),
+                self._axis_scale(axis_spec),
+                index > 0,
             )
+            if self._axis_layout[index] != layout:
+                dpg.configure_item(
+                    axis_tag,
+                    show=True,
+                    label=layout[2],
+                    scale=layout[3],
+                    opposite=layout[4],
+                    no_side_switch=True,
+                )
+                self._axis_layout[index] = layout
+                axis_layout_changed = True
 
         for measurement, graph, axis_index in desired:
             axis_tag = self.y_axes[axis_index]
@@ -275,14 +318,23 @@ class Plot:
             x, y = self._display_data(graph)
             label = f"{measurement.name}: {graph.name}"
             plot_type = getattr(graph, "plot_type", PlotType.LINE)
-            layout = axis_tag, plot_type
+            color = graph.color
+            layout = axis_tag, plot_type, color
             if self._series_layout.get(series_tag) != layout:
                 if series_tag in self.series_tags:
                     dpg.delete_item(series_tag)
                     self.series_tags.remove(series_tag)
+                    self._series_labels.pop(series_tag, None)
                 self._bar_data.pop(series_tag, None)
                 if plot_type == PlotType.BARS:
-                    self._add_bar_series(series_tag, axis_tag, label, x, y)
+                    self._add_bar_series(
+                        series_tag,
+                        axis_tag,
+                        label,
+                        x,
+                        y,
+                        color,
+                    )
                 else:
                     dpg.add_line_series(
                         x.tolist(),
@@ -291,14 +343,28 @@ class Plot:
                         tag=series_tag,
                         parent=axis_tag,
                     )
+                dpg.bind_item_theme(series_tag, self._theme_for_color(color))
                 self.series_tags.append(series_tag)
                 self._series_layout[series_tag] = layout
+                self._series_labels[series_tag] = label
             else:
-                dpg.set_item_label(series_tag, label)
+                if self._series_labels.get(series_tag) != label:
+                    dpg.set_item_label(series_tag, label)
+                    self._series_labels[series_tag] = label
                 if plot_type == PlotType.BARS:
                     self._set_bar_data(series_tag, axis_tag, x, y)
                 else:
                     dpg.set_value(series_tag, [x.tolist(), y.tolist()])
+
+        if visible_graphs and (
+            not self._legend_initialized
+            or axis_layout_changed
+            or topology_changed
+        ):
+            # Axis and series reconfiguration can reset ImPlot's legend flag.
+            # Restore it only after every structural change is complete.
+            dpg.configure_item(self.legend, show=True)
+            self._legend_initialized = True
 
         pending_axis_fits = self._pending_axis_fits
         self._pending_axis_fits = set()
@@ -314,6 +380,7 @@ class Plot:
         label: str,
         x: np.ndarray,
         y: np.ndarray,
+        color: GraphColor,
     ) -> None:
         """Draw variable-width bars that remain even on a logarithmic X axis."""
         top_x, top_y, baseline = self._bar_series_data(parent, x, y)
@@ -322,6 +389,7 @@ class Plot:
             top_y,
             parent,
             float(baseline[0]) if len(baseline) else 0.0,
+            color,
         )
         dpg.add_custom_series(
             top_x.tolist(),
@@ -348,6 +416,7 @@ class Plot:
             top_y,
             parent,
             float(baseline[0]) if len(baseline) else 0.0,
+            self._bar_data[tag][4],
         )
         dpg.set_value(
             tag,
@@ -370,6 +439,11 @@ class Plot:
     def _draw_bar_series(self, sender, app_data, user_data=None) -> None:
         if len(app_data) < 4:
             return
+        bar_data = self._bar_data.get(sender)
+        if bar_data is None:
+            return
+        color = bar_data[4]
+        fill = color[:3] + (min(color[3], 140),)
         transformed_x = app_data[1]
         transformed_y = app_data[2]
         transformed_baseline = app_data[3]
@@ -384,21 +458,23 @@ class Plot:
                 dpg.draw_rectangle(
                     (left, transformed_y[index]),
                     (right, transformed_baseline[index + 1]),
-                    color=self.BAR_COLOR,
-                    fill=self.BAR_FILL,
+                    color=color,
+                    fill=fill,
                 )
         finally:
             dpg.pop_container_stack()
 
     def _refresh_bar_baselines(self) -> None:
-        for tag, (top_x, top_y, axis_tag, previous) in list(self._bar_data.items()):
+        for tag, (top_x, top_y, axis_tag, previous, color) in list(
+            self._bar_data.items()
+        ):
             if tag not in self.series_tags:
                 self._bar_data.pop(tag, None)
                 continue
             lower = self._axis_lower_limit(axis_tag, top_y)
             if np.isclose(lower, previous, rtol=1e-9, atol=1e-12):
                 continue
-            self._bar_data[tag] = top_x, top_y, axis_tag, lower
+            self._bar_data[tag] = top_x, top_y, axis_tag, lower, color
             dpg.set_value(
                 tag,
                 [
@@ -407,6 +483,30 @@ class Plot:
                     np.full_like(top_y, lower).tolist(),
                 ],
             )
+
+    def _theme_for_color(self, color: GraphColor) -> str:
+        theme = self._color_themes.get(color)
+        if theme is not None:
+            return theme
+        theme = f"{self.tag}::color::{color[0]}_{color[1]}_{color[2]}_{color[3]}"
+        fill = color[:3] + (min(color[3], 140),)
+        with dpg.theme(tag=theme):  # pyright: ignore[reportGeneralTypeIssues]
+            for component in (dpg.mvLineSeries, dpg.mvCustomSeries):
+                with dpg.theme_component(  # pyright: ignore[reportGeneralTypeIssues]
+                    component
+                ):
+                    dpg.add_theme_color(
+                        dpg.mvPlotCol_Line,
+                        color,
+                        category=dpg.mvThemeCat_Plots,
+                    )
+                    dpg.add_theme_color(
+                        dpg.mvPlotCol_Fill,
+                        fill,
+                        category=dpg.mvThemeCat_Plots,
+                    )
+        self._color_themes[color] = theme
+        return theme
 
     @staticmethod
     def _axis_lower_limit(axis_tag: int | str, y: np.ndarray) -> float:

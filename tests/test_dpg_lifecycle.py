@@ -42,6 +42,12 @@ class FakeDpgBackend:
     mvThemeCol_ButtonHovered = 3
     mvThemeCol_ButtonActive = 4
     mvThemeCat_Core = 5
+    mvThemeCat_Plots = 6
+    mvPlotCol_Line = 7
+    mvPlotCol_Fill = 8
+    mvLineSeries = 9
+    mvCustomSeries = 10
+    mvPlot_Location_NorthWest = 11
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
@@ -596,6 +602,21 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             backend.calls,
         )
 
+        app.main_window.plot._topology = (
+            ("level", AxisSpec.LEVEL, PlotType.LINE),
+            ("phase", AxisSpec.PHASE, PlotType.LINE),
+        )
+        with patch("spectrum_app.gui.plot.dpg", backend):
+            app.main_window.plot.update()
+        self.assertIn(
+            (
+                "configure_item",
+                app.main_window.plot.watermark,
+                {"pos": (644.0, 60.0), "show": True},
+            ),
+            backend.calls,
+        )
+
         backend.shown_windows.append(app.main_window.settings_window.tag)
         with patch("spectrum_app.gui.plot.dpg", backend):
             app.main_window.plot.update()
@@ -822,6 +843,19 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
 
         series_calls = [call for call in backend.calls if call[0] == "add_line_series"]
         self.assertEqual(len(series_calls), 3)
+        legend_call = next(
+            call for call in backend.calls if call[0] == "add_plot_legend"
+        )
+        self.assertEqual(legend_call[1]["tag"], window.plot.legend)
+        self.assertTrue(legend_call[1]["show"])
+        self.assertEqual(
+            legend_call[1]["location"],
+            backend.mvPlot_Location_NorthWest,
+        )
+        self.assertIn(
+            ("configure_item", window.plot.legend, {"show": True}),
+            backend.calls,
+        )
         self.assertEqual(
             [call[3]["parent"] for call in series_calls],
             window.plot.y_axes,
@@ -885,6 +919,84 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "add_line_series" for call in backend.calls))
         self.assertFalse(any(call[0] == "delete_item" for call in backend.calls))
         self.assertFalse(any(call[0] == "fit_axis_data" for call in backend.calls))
+        self.assertFalse(any(call[0] == "set_item_label" for call in backend.calls))
+        self.assertFalse(
+            any(
+                call[0] == "configure_item"
+                and call[1] in [*window.plot.y_axes, window.plot.legend]
+                for call in backend.calls
+            )
+        )
+
+        backend.calls.clear()
+        second = GraphData(
+            "Second",
+            graph.x.copy(),
+            graph.y - 5.0,
+            AxisSpec.FREQ,
+            AxisSpec.LEVEL,
+        )
+        measurement.graphs.append(second)
+        app.app_state.visible_graph_ids.append(second.id)
+        app.app_state.graph_data_changed = True
+        with patch("spectrum_app.gui.plot.dpg", backend):
+            window.plot.update()
+
+        series_index = next(
+            index
+            for index, call in enumerate(backend.calls)
+            if call[0] == "add_line_series"
+            and call[3]["tag"] == window.plot._series_tag(second.id)
+        )
+        legend_index = next(
+            index
+            for index, call in enumerate(backend.calls)
+            if call
+            == ("configure_item", window.plot.legend, {"show": True})
+        )
+        self.assertLess(series_index, legend_index)
+
+    def test_plot_restores_same_color_after_series_is_hidden(self) -> None:
+        backend = FakeDpgBackend()
+        app = SpectrumApplication()
+        measurement = app.create_measurement()
+        graph = GraphData(
+            "Spectrum",
+            np.array([20.0, 200.0]),
+            np.array([-30.0, -20.0]),
+            AxisSpec.FREQ,
+            AxisSpec.LEVEL,
+            color=(12, 34, 56, 255),
+        )
+        measurement.graphs = [graph]
+        app.app_state.visible_graph_ids = [graph.id]
+        window = MainWindow(app)
+
+        with patch("spectrum_app.gui.plot.dpg", backend):
+            window.plot.build(width=800, height=600)
+            window.plot.update()
+            first_theme = next(
+                call[2]
+                for call in backend.calls
+                if call[0] == "bind_item_theme"
+                and call[1] == window.plot._series_tag(graph.id)
+            )
+            app.app_state.visible_graph_ids.clear()
+            app.app_state.graph_data_changed = True
+            window.plot.update()
+            backend.calls.clear()
+            app.app_state.visible_graph_ids.append(graph.id)
+            app.app_state.graph_data_changed = True
+            window.plot.update()
+
+        self.assertIn(
+            (
+                "bind_item_theme",
+                window.plot._series_tag(graph.id),
+                first_theme,
+            ),
+            backend.calls,
+        )
 
     def test_phase_unit_change_refits_visible_phase_axis(self) -> None:
         backend = FakeDpgBackend()
@@ -950,6 +1062,8 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
         rectangle = next(item for item in backend.calls if item[0] == "draw_rectangle")
         self.assertEqual(rectangle[1], (11.5, 30.0))
         self.assertEqual(rectangle[2], (18.5, 100.0))
+        self.assertEqual(rectangle[3]["color"], graph.color)
+        self.assertEqual(rectangle[3]["fill"], graph.color[:3] + (140,))
 
     def test_settings_window_updates_application_settings(self) -> None:
         backend = FakeDpgBackend()

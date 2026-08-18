@@ -724,6 +724,7 @@ class ImpedanceModule(BaseModule):
         measurement: Measurement,
         result: ImpedanceResult,
     ) -> None:
+        measurement.remember_graph_colors()
         specs = (
             ("Impedance", result.magnitude, AxisSpec.IMPEDANCE),
             ("Phase", result.phase, AxisSpec.PHASE),
@@ -739,7 +740,14 @@ class ImpedanceModule(BaseModule):
         while len(measurement.graphs) < 2:
             name, y, axis = specs[len(measurement.graphs)]
             measurement.graphs.append(
-                GraphData(name, result.frequency, y, AxisSpec.FREQ, axis)
+                GraphData(
+                    name,
+                    result.frequency,
+                    y,
+                    AxisSpec.FREQ,
+                    axis,
+                    color=measurement.color_for_graph(name),
+                )
             )
         for graph, (name, y, axis) in zip(measurement.graphs[:2], specs):
             graph.name = name
@@ -752,6 +760,7 @@ class ImpedanceModule(BaseModule):
         self.app.app_state.graph_data_changed = True
 
     def _clear_graphs(self, measurement: Measurement) -> None:
+        measurement.remember_graph_colors()
         ids = {graph.id for graph in measurement.graphs}
         measurement.graphs.clear()
         self.app.app_state.visible_graph_ids = [

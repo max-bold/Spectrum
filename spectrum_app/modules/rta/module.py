@@ -353,6 +353,7 @@ class RTAModule(BaseModule):
         frequency: np.ndarray,
         level_db: np.ndarray,
     ) -> None:
+        measurement.remember_graph_colors()
         values = np.asarray(level_db, dtype=np.float64)
         if values.ndim == 1:
             values = values[:, None]
@@ -381,6 +382,7 @@ class RTAModule(BaseModule):
                     x_axis=AxisSpec.FREQ,
                     y_axis=AxisSpec.LEVEL,
                     plot_type=plot_type,
+                    color=measurement.color_for_graph(name),
                 )
                 new_graph_ids.append(graph.id)
             else:
@@ -475,6 +477,7 @@ class RTAModule(BaseModule):
         )
 
     def _clear_measurement_data(self, measurement: Measurement) -> None:
+        measurement.remember_graph_colors()
         state = measurement.module_state
         state["recording"] = None
         state["result_frequency"] = None

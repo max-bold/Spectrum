@@ -23,6 +23,7 @@ class ProjectStorageTests(unittest.TestCase):
             name="Stored measurement",
             module_state={"calibration": 1.25, "window": "hann"},
             graphs=[graph],
+            graph_colors={"Spectrum": graph.color, "Phase": (10, 20, 30, 255)},
         )
         state = AppState(
             measurements=[measurement],
@@ -45,6 +46,11 @@ class ProjectStorageTests(unittest.TestCase):
             )
             np.testing.assert_array_equal(loaded.measurements[0].graphs[0].x, graph.x)
             np.testing.assert_array_equal(loaded.measurements[0].graphs[0].y, graph.y)
+            self.assertEqual(loaded.measurements[0].graphs[0].color, graph.color)
+            self.assertEqual(
+                loaded.measurements[0].graph_colors,
+                measurement.graph_colors,
+            )
 
     def test_invalid_project_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:

@@ -258,6 +258,7 @@ class MeasurementPanel:
         measurement.module_id = module_id
         measurement.module_state.clear()
         measurement.graphs.clear()
+        measurement.graph_colors.clear()
         self.app.app_state.graph_data_changed = True
         self.update(force=True)
 

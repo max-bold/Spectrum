@@ -523,6 +523,7 @@ class PhaseModule(BaseModule):
                 y=result.phase_degrees,
                 x_axis=AxisSpec.FREQ,
                 y_axis=AxisSpec.PHASE,
+                color=measurement.color_for_graph("Phase"),
             )
             measurement.graphs.append(graph)
         if graph.id not in self.app.app_state.visible_graph_ids:
@@ -530,6 +531,7 @@ class PhaseModule(BaseModule):
         self.app.app_state.graph_data_changed = True
 
     def _clear_measurement_data(self, measurement: Measurement) -> None:
+        measurement.remember_graph_colors()
         state = measurement.module_state
         for key in (
             "recording",

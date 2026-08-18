@@ -23,6 +23,8 @@ def save_project(state: AppState, path: str | Path) -> Path:
     temporary_path = project_path.with_suffix(project_path.suffix + ".tmp")
     previous_path = state.project_path
     state.project_path = project_path
+    for measurement in state.measurements:
+        measurement.remember_graph_colors()
 
     try:
         payload = pickle.dumps(state, protocol=pickle.HIGHEST_PROTOCOL)

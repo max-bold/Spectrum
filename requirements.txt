@@ -1,7 +1,7 @@
-dearpygui
-matplotlib
-numpy
-pywin32; platform_system == "Windows"
-scipy
-sounddevice
-soundfile
+dearpygui==2.3.1
+matplotlib==3.11.0
+numpy==2.5.0
+pywin32==312; platform_system == "Windows"
+scipy==1.18.0
+sounddevice==0.5.5
+soundfile==0.14.0

@@ -14,7 +14,13 @@ import zlib
 import numpy as np
 
 from audioanalysis import ASignal
-from spectrum_app.core.model import AxisSpec, GraphData, Measurement, PlotType
+from spectrum_app.core.model import (
+    AxisSpec,
+    GraphData,
+    Measurement,
+    PlotType,
+    normalize_graph_color,
+)
 
 
 MEASUREMENT_EXTENSION = ".bmm"
@@ -82,11 +88,15 @@ def load_measurement(path: str | Path) -> Measurement:
 
 
 def _encode_measurement(measurement: Measurement) -> dict[str, Any]:
+    measurement.remember_graph_colors()
     return {
         "module_id": measurement.module_id,
         "name": measurement.name,
         "module_state": _encode_value(measurement.module_state),
         "graphs": [_encode_graph(graph) for graph in measurement.graphs],
+        "graph_colors": {
+            name: list(color) for name, color in measurement.graph_colors.items()
+        },
     }
 
 
@@ -107,11 +117,20 @@ def _decode_measurement(value: object) -> Measurement:
         isinstance(key, str) for key in module_state
     ):
         raise ValueError("measurement module_state is invalid")
+    colors_value = value.get("graph_colors", {})
+    if not isinstance(colors_value, dict) or not all(
+        isinstance(name, str) for name in colors_value
+    ):
+        raise ValueError("measurement graph colors are invalid")
+    graph_colors = {
+        name: normalize_graph_color(color) for name, color in colors_value.items()
+    }
     return Measurement(
         module_id=module_id,
         name=name,
         module_state=module_state,
         graphs=[_decode_graph(graph) for graph in graphs_value],
+        graph_colors=graph_colors,
     )
 
 
@@ -123,6 +142,7 @@ def _encode_graph(graph: GraphData) -> dict[str, Any]:
         "x_axis": graph.x_axis.value,
         "y_axis": graph.y_axis.value,
         "plot_type": getattr(graph, "plot_type", PlotType.LINE).value,
+        "color": list(graph.color),
     }
 
 
@@ -142,6 +162,17 @@ def _decode_graph(value: object) -> GraphData:
         plot_type = PlotType(value.get("plot_type", PlotType.LINE.value))
     except (TypeError, ValueError) as error:
         raise ValueError("graph axis is invalid") from error
+    color_value = value.get("color")
+    color = normalize_graph_color(color_value) if color_value is not None else None
+    if color is None:
+        return GraphData(
+            name=name,
+            x=x,
+            y=y,
+            x_axis=x_axis,
+            y_axis=y_axis,
+            plot_type=plot_type,
+        )
     return GraphData(
         name=name,
         x=x,
@@ -149,6 +180,7 @@ def _decode_graph(value: object) -> GraphData:
         x_axis=x_axis,
         y_axis=y_axis,
         plot_type=plot_type,
+        color=color,
     )
 
 

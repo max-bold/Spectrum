@@ -9,6 +9,7 @@ from audioanalysis import (
     SpectrumConfig,
     SpectrumResult,
     analyze_spectrum,
+    extend_log_sweep_band,
     log_chirp,
     pink_noise,
     power_db,
@@ -28,8 +29,6 @@ AnalysisResponse = tuple[int, bool, SpectrumResult | None, str | None]
 class SpectrumAcquisition(Thread):
     """Records input and plays a generated signal using blocking audio APIs."""
 
-    LEADING_SILENCE_SECONDS = 0.2
-    RECORDING_TAIL_SECONDS = 1.0
     LEVEL_UPDATE_SECONDS = 0.1
 
     def __init__(
@@ -40,6 +39,10 @@ class SpectrumAcquisition(Thread):
         generator_mode: str,
         band: FrequencyBand,
         duration: float,
+        pre_silence: float,
+        post_silence: float,
+        fade_in: float,
+        fade_out: float,
         online_interval: float | None,
         on_level: LevelCallback,
         on_snapshot: SnapshotCallback,
@@ -51,6 +54,10 @@ class SpectrumAcquisition(Thread):
         self.generator_mode = generator_mode
         self.band = band
         self.duration = duration
+        self.pre_silence = pre_silence
+        self.post_silence = post_silence
+        self.fade_in = fade_in
+        self.fade_out = fade_out
         self.online_interval = online_interval
         self.on_level = on_level
         self.on_snapshot = on_snapshot
@@ -93,7 +100,6 @@ class SpectrumAcquisition(Thread):
             output_rate = self.audio_output.sample_rate
             target_samples = int(
                 np.ceil(generator.sample_count * input_rate / output_rate)
-                + self.RECORDING_TAIL_SECONDS * input_rate
             )
             update_samples = (
                 max(1, int(self.online_interval * input_rate))
@@ -183,12 +189,20 @@ class SpectrumAcquisition(Thread):
 
     def _generate_signal(self) -> ASignal:
         sample_rate = self.audio_output.sample_rate
-        samples = max(1, int(round(self.duration * sample_rate)))
+        active_duration = self.fade_in + self.duration + self.fade_out
+        samples = max(1, int(round(active_duration * sample_rate)))
         if self.generator_mode == "log chirp":
+            sweep_band = extend_log_sweep_band(
+                self.band,
+                self.duration,
+                self.fade_in,
+                self.fade_out,
+            )
+            sweep_band.validate(nyquist=sample_rate / 2.0)
             signal = log_chirp(
                 samples,
                 sample_rate,
-                self.band,
+                sweep_band,
             )
         elif self.generator_mode == "pink noise":
             signal, _ = pink_noise(
@@ -198,8 +212,14 @@ class SpectrumAcquisition(Thread):
             )
         else:
             raise ValueError(f"Unknown generator mode: {self.generator_mode}")
-        leading_silence = int(round(self.LEADING_SILENCE_SECONDS * sample_rate))
-        return signal.pad(in_=leading_silence)
+        signal = signal.fade(
+            in_=int(round(self.fade_in * sample_rate)),
+            out=int(round(self.fade_out * sample_rate)),
+        )
+        return signal.pad(
+            in_=int(round(self.pre_silence * sample_rate)),
+            out=int(round(self.post_silence * sample_rate)),
+        )
 
     def _write_signal(self, generator: ASignal) -> None:
         try:

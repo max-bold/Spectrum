@@ -39,6 +39,10 @@ class MeasurementIOTests(unittest.TestCase):
                 "$bmm": "ordinary module value",
             },
             graphs=[graph],
+            graph_colors={
+                "THD+N": graph.color,
+                "Phase": (10, 20, 30, 255),
+            },
         )
 
         with TemporaryDirectory() as directory:
@@ -73,6 +77,8 @@ class MeasurementIOTests(unittest.TestCase):
         np.testing.assert_array_equal(loaded.graphs[0].x, graph.x)
         np.testing.assert_array_equal(loaded.graphs[0].y, graph.y)
         self.assertEqual(loaded.graphs[0].plot_type, PlotType.BARS)
+        self.assertEqual(loaded.graphs[0].color, graph.color)
+        self.assertEqual(loaded.graph_colors, measurement.graph_colors)
 
     def test_invalid_measurement_document_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:

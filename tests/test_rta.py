@@ -60,6 +60,7 @@ class RTAMathTests(unittest.TestCase):
             fade_in=0.2,
             fade_out=0.15,
             on_clipping=lambda message: clipped.append(True),
+            rng=np.random.default_rng(0),
         )
         generator.start()
         blocks: list[np.ndarray] = []
@@ -83,6 +84,7 @@ class RTAMathTests(unittest.TestCase):
         self.assertEqual(float(output[10]), 0.0)
         self.assertAlmostEqual(float(output[-1]), 0.0, places=7)
         self.assertFalse(generator.is_alive())
+        self.assertFalse(clipped)
         self.assertLessEqual(float(np.max(np.abs(output))), 1.0)
 
 
