@@ -9,6 +9,10 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 app_name = os.environ.get("APP_NAME", "BM_Spectrum")
 target_arch = os.environ.get("PYINSTALLER_TARGET_ARCH") or None
 is_macos = sys.platform == "darwin"
+project_root = os.path.abspath(SPECPATH)
+
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 if target_arch not in {None, "x86_64", "arm64", "universal2"}:
     raise ValueError(
@@ -23,7 +27,7 @@ application_data = collect_data_files(
 
 a = Analysis(
     ["run.py"],
-    pathex=[],
+    pathex=[project_root],
     binaries=[],
     datas=application_data,
     hiddenimports=hidden_imports,
