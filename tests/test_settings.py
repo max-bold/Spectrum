@@ -1,73 +1,90 @@
 import json
-import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import unittest
 
-from spectrum_app.settings import (
-    AppSettings,
-    AudioSettings,
-    DEFAULT_INPUT,
-    DEFAULT_OUTPUT,
-    load_settings,
-    resolve_device,
-    validate_audio_settings,
-)
+from spectrum_app.core.settings import AppSettings
 
 
-class SettingsTests(unittest.TestCase):
-    def test_settings_round_trip(self) -> None:
+class AppSettingsTests(unittest.TestCase):
+    def test_changes_are_saved_and_loaded_automatically(self) -> None:
+        changes: list[str] = []
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            settings = AppSettings(
-                audio=AudioSettings(
-                    input_device="3: input",
-                    output_device="5: output",
-                    block_size=2048,
-                ),
-                path=path,
+            settings = AppSettings(on_change=lambda: changes.append("changed"))
+
+            self.assertFalse(settings.load(path))
+            settings.frequency_range = (10.0, 30_000.0)
+            settings.impedance_scale = "log"
+            settings.thd_scale = "log"
+            settings.phase_unit = "deg/dec"
+            settings.input_device = "WASAPI\x1fInput"
+            settings.output_device = "WASAPI\x1fOutput"
+            settings.input_block_size = 2048
+            settings.output_block_size = 4096
+            settings.input_routing = (3, 1)
+            settings.output_routing = (True, False, True, True)
+            settings.set_module_setting("spectrum", "generator_mode", "pink noise")
+            settings.set_module_setting("spectrum", "welch_samples", 4096)
+            settings.set_module_setting("spectrum", "online_welch", False)
+
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data, settings.to_dict())
+            self.assertFalse(path.with_suffix(".json.tmp").exists())
+            self.assertEqual(len(changes), 13)
+
+            loaded = AppSettings()
+            self.assertTrue(loaded.load(path))
+            self.assertEqual(loaded.frequency_range, (10.0, 30_000.0))
+            self.assertEqual(loaded.impedance_scale, "log")
+            self.assertEqual(loaded.thd_scale, "log")
+            self.assertEqual(loaded.phase_unit, "deg/dec")
+            self.assertEqual(loaded.input_device, "WASAPI\x1fInput")
+            self.assertEqual(loaded.output_device, "WASAPI\x1fOutput")
+            self.assertEqual(loaded.input_block_size, 2048)
+            self.assertEqual(loaded.output_block_size, 4096)
+            self.assertEqual(loaded.input_routing, (3, 1))
+            self.assertEqual(
+                loaded.output_routing,
+                (True, False, True, True),
             )
-            settings.save()
-
-            loaded = load_settings(path)
-
-            self.assertEqual(loaded.audio, settings.audio)
-
-    def test_missing_devices_are_reset_to_default_and_saved(self) -> None:
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "settings.json"
-            settings = AppSettings(
-                audio=AudioSettings(
-                    input_device="3: missing input",
-                    output_device="5: missing output",
-                ),
-                path=path,
+            self.assertEqual(
+                loaded.module_setting("spectrum", "generator_mode"),
+                "pink noise",
             )
+            self.assertEqual(
+                loaded.module_setting("spectrum", "welch_samples"),
+                4096,
+            )
+            self.assertFalse(loaded.module_setting("spectrum", "online_welch"))
 
-            devices = validate_audio_settings(settings, [], [])
-
-            self.assertEqual(devices, (None, None))
-            self.assertEqual(settings.audio.input_device, DEFAULT_INPUT)
-            self.assertEqual(settings.audio.output_device, DEFAULT_OUTPUT)
-            saved = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["audio"]["input_device"], DEFAULT_INPUT)
-
-    def test_device_is_recovered_when_portaudio_index_changes(self) -> None:
-        saved = "3: USB Audio, Windows WASAPI, 2>>0, 48.0 kHz"
-        current = "7: USB Audio, Windows WASAPI, 2>>0, 48.0 kHz"
-
-        name, index = resolve_device(saved, [current], DEFAULT_INPUT)
-
-        self.assertEqual(name, current)
-        self.assertEqual(index, 7)
-
-    def test_invalid_settings_file_uses_defaults(self) -> None:
+    def test_invalid_file_falls_back_to_defaults(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
-            path.write_text("{broken", encoding="utf-8")
+            path.write_text("not json", encoding="utf-8")
+            settings = AppSettings()
 
-            settings = load_settings(path)
+            self.assertFalse(settings.load(path))
 
-            self.assertEqual(settings.audio, AudioSettings())
+            self.assertEqual(
+                settings.frequency_range,
+                AppSettings.DEFAULT_FREQUENCY_RANGE,
+            )
+            self.assertEqual(settings.impedance_scale, "linear")
+            self.assertEqual(settings.thd_scale, "linear")
+            self.assertEqual(settings.phase_unit, "deg")
+
+    def test_frequency_range_is_validated(self) -> None:
+        settings = AppSettings()
+
+        with self.assertRaisesRegex(ValueError, "positive and increasing"):
+            settings.frequency_range = (1000.0, 20.0)
+
+    def test_block_sizes_are_validated(self) -> None:
+        settings = AppSettings()
+
+        with self.assertRaisesRegex(ValueError, "positive"):
+            settings.input_block_size = 0
 
 
 if __name__ == "__main__":

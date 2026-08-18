@@ -3,3 +3,7 @@
 /venv
 /build
 /dist
+/spectrum_app/settings.json
+/spectrum_app/settings.json.tmp
+*.bms
+*.bmm

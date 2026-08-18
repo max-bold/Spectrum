@@ -1,31 +1,32 @@
-import dearpygui.dearpygui as dpg
+from collections.abc import Sequence
+import sys
 
-from spectrum_app.gui import build_ui
-from spectrum_app.callbacks import bind_input_commit_handlers
-from spectrum_app.state import create_app_state
-from spectrum_app.ui.sync import sync_ui
+from spectrum_app.modules.manager import ModuleManager
 
 
-def main() -> None:
-    dpg.create_context()
-    state = create_app_state()
-    refs = build_ui(state)
-    bind_input_commit_handlers(state, refs)
-    state.start_services()
+REQUIRED_MODULE_IDS = {"impedance", "phase", "rta", "spectrum", "thd"}
 
-    dpg.create_viewport(title="BM Spectrum", width=1024, height=768)
-    dpg.setup_dearpygui()
-    dpg.show_viewport()
-    dpg.set_primary_window("Primary Window", True)
 
+def _check_modules() -> int:
     try:
-        while dpg.is_dearpygui_running():
-            sync_ui(state, refs)
-            dpg.render_dearpygui_frame()
-    finally:
-        state.stop_services()
-        dpg.destroy_context()
+        manager = ModuleManager()
+        manager.discover()
+        return 0 if set(manager.module_ids) == REQUIRED_MODULE_IDS else 1
+    except Exception:
+        return 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments == ["--check-modules"]:
+        return _check_modules()
+
+    from spectrum_app.application import SpectrumApplication
+
+    app = SpectrumApplication()
+    app.run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

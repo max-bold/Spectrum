@@ -1,87 +1,72 @@
-# Spectrum Analyzer
+# BM Spectrum
 
-A real-time audio spectrum analyzer built with Python and Dear PyGui, designed for audio analysis and signal processing applications.
+BM Spectrum is a modular audio measurement application built with Python and
+Dear PyGui. Version 0.3 replaces the original analyzer with an independent
+measurement-module architecture and a reusable `audioanalysis` DSP library.
 
-![Screenshot](screenshot.png)
+## Measurement modules
 
+- **Spectrum** — logarithmic sweep or pink-noise spectrum measurement;
+- **Impedance** — two-channel impedance magnitude and phase measurement;
+- **Phase** — acoustic/electrical phase and delay measurement;
+- **THD+N** — semi-analog swept residual distortion measurement;
+- **RTA** — continuously updated real-time spectrum analyzer.
 
-## Features
-
-- **Real-time FFT Analysis**: Live frequency domain visualization with logarithmic frequency scale
-- **Multiple Recording Channels**: Support for up to 5 simultaneous recordings
-- **Time Domain Visualization**: Real-time level meters and waveform display
-- **Audio I/O Management**: Comprehensive audio input/output device management
-- **Signal Generation**: Built-in log sweep and pink noise generators for testing and calibration
-- **Professional Audio Support**: Compatible with various audio interfaces and devices
-- **Cross-platform**: Works on Windows with ASIO support, Linux, and macOS (need testing)
+Measurements are stored independently inside a project and can display several
+results on the same plot. Projects use the `.bms` format; individual
+measurements can be transferred between projects as `.bmm` files. The plot can
+also be exported directly to PNG.
 
 ## Requirements
 
-- Python 3.10+
-- Audio interface (built-in or external)
-- Windows OS (with optional ASIO driver support)
+- Python 3.12 or newer;
+- an audio input/output device supported by PortAudio;
+- Windows is the primary tested platform. macOS builds are produced by CI but
+  still require broader hardware testing.
 
-## Installation
+Install the runtime dependencies:
 
-1. Clone or download this repository
-2. Install required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+python -m pip install -r requirements.txt
+```
+
+Run the application:
+
+```bash
+python -m spectrum_app
+```
+
+`python run.py` is an equivalent entrypoint.
+
+## Development
+
+Run the test suite:
+
+```bash
+python -m unittest discover -s tests
+```
+
+The main source directories are:
+
+- `spectrum_app/` — application core, GUI and measurement modules;
+- `audioanalysis/` — reusable signal generation and analysis functions;
+- `tests/` — application and DSP tests;
+- `docs/design/` — architecture decisions and module contract.
+
+Each measurement module owns its controls, state and workers, while audio
+device access, projects, settings and the shared plot are managed by the
+application core. See [`docs/design/module_contract.md`](docs/design/module_contract.md)
+before adding a module.
 
 ## Release builds
 
-Tagged pushes build release artifacts automatically with GitHub Actions:
+Pushing a version tag builds Windows, macOS Intel and macOS Apple Silicon
+archives and publishes them to GitHub Releases:
 
 ```bash
-git tag v0.2.3
-git push origin v0.2.3
+git tag -a v0.3 -m "BM Spectrum v0.3"
+git push origin v0.3
 ```
 
-The release workflow publishes separate Windows, macOS Intel, and macOS Apple
-Silicon zip files.
-
-## Usage
-
-To start the spectrum analyzer, run:
-
-```bash
-py run.py
-```
-
-### Main Interface
-
-The application features a dual-pane interface:
-- **Left Panel**: Real-time FFT plot showing frequency response (20 Hz - 20 kHz)
-- **Right Panel**: Control panel with audio settings, recording options, and level meters
-
-### Key Controls
-
-- **Run/Stop**: Start or stop audio analysis
-- **Record Management**: Enable/disable multiple recording tracks
-- **Audio Settings**: Configure input/output devices and sample rates
-- **Generator Controls**: Access built-in signal generators for testing
-
-## Project Structure
-
-- `run.py` - Application entrypoint
-- `spectrum_app/gui.py` - Dear PyGui interface construction
-- `spectrum_app/models.py` - Application enums and shared model types
-- `spectrum_app/themes.py` - Dear PyGui themes
-- `spectrum_app/cbs.py` - Compatibility facade for callbacks and app state
-- `spectrum_app/` - Application state, callbacks, file I/O, analysis orchestration, and UI sync logic
-- `utils/` - Utility modules for audio processing and DSP
-- `tests/` - Automated tests for the released application
-
-## Technical Details
-
-The analyzer uses:
-- **Dear PyGui** for the user interface
-- **SoundDevice** for audio I/O operations
-- **NumPy/SciPy** for signal processing and FFT calculations
-- **Matplotlib** for additional plotting capabilities
-
-## Contributing
-
-Development of new modules and the next application architecture takes place in
-the `dev` branch. The `main` branch contains the current stable application.
+macOS bundles are currently not notarized. They may need to be opened through
+Finder's **Open** context-menu command on first launch.
