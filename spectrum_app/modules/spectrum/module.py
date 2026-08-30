@@ -1,5 +1,6 @@
 from copy import deepcopy
 from threading import Lock
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -30,18 +31,22 @@ if TYPE_CHECKING:
 class SpectrumModule(BaseModule):
     id = "spectrum"
     name = "Spectrum"
-    ONLINE_INTERVAL = 0.5
 
     DEFAULT_STATE: dict[str, Any] = {
         "band": (20, 20_000),
         "duration": 10.0,
-        "reference": "channel b",
+        "reference": "generator",
         "weighting": "none",
         "window_width": 0.1,
         "points": 1024,
         "window": SmoothingWindow.GAUSSIAN.value,
         "recording": None,
         "generator": None,
+        "recordings": [],
+        "generators": [],
+        "multiple": False,
+        "count": 3,
+        "auto": False,
         "level_time": np.empty(0, dtype=np.float64),
         "level_values": np.empty((0, 0), dtype=np.float64),
     }
@@ -54,7 +59,6 @@ class SpectrumModule(BaseModule):
         self._analyzer: SpectrumAnalyzer | None = None
         self._acquisition: SpectrumAcquisition | None = None
         self._runtime_lock = Lock()
-        self._pending_snapshot: tuple[Measurement, ASignal, ASignal] | None = None
         self._pending_level: tuple[Measurement, np.ndarray, np.ndarray] | None = None
         self._pending_completion: (
             tuple[
@@ -73,6 +77,13 @@ class SpectrumModule(BaseModule):
         self._finish_status = ""
         self._reanalysis_requested = False
         self._stop_requested = False
+        self._cycle_measurement: Measurement | None = None
+        self._completed_recordings: list[ASignal] = []
+        self._completed_generators: list[ASignal | None] = []
+        self._target_count = 1
+        self._automatic_repeat = False
+        self._waiting_for_repeat = False
+        self._next_take_at: float | None = None
 
     def initialize(self, app: "SpectrumApplication") -> None:
         super().initialize(app)
@@ -93,7 +104,7 @@ class SpectrumModule(BaseModule):
             self.app.main_window.bottom_host,
             measurement.module_state,
         )
-        if measurement.module_state["recording"] is not None and not measurement.graphs:
+        if self._stored_takes(measurement.module_state)[0] and not measurement.graphs:
             self._reanalysis_requested = True
 
     def start_measurement(self) -> None:
@@ -106,87 +117,81 @@ class SpectrumModule(BaseModule):
         state = self.measurement.module_state
         try:
             self._validate_audio_settings(state)
-            band = FrequencyBand(*state["band"])
             measurement = self.measurement
-            acquisition = SpectrumAcquisition(
-                self.app.audio_input,
-                self.app.audio_output,
-                generator_mode=self.settings.generator_mode,
-                band=band,
-                duration=state["duration"],
-                pre_silence=self.settings.pre_silence,
-                post_silence=self.settings.post_silence,
-                fade_in=self.settings.fade_in,
-                fade_out=self.settings.fade_out,
-                online_interval=(
-                    self.ONLINE_INTERVAL if self.settings.online_welch else None
-                ),
-                on_level=lambda times, levels: self._receive_level(
-                    measurement,
-                    times,
-                    levels,
-                ),
-                on_snapshot=lambda recording, generator: self._receive_snapshot(
-                    measurement,
-                    recording,
-                    generator,
-                ),
-                on_complete=(
-                    lambda recording, generator, times, levels, error: (
-                        self._receive_completion(
-                            measurement,
-                            recording,
-                            generator,
-                            times,
-                            levels,
-                            error,
-                        )
-                    )
-                ),
-            )
             with self._runtime_lock:
-                self._pending_snapshot = None
                 self._pending_level = None
                 self._pending_completion = None
             self._invalidate_analysis()
-            self._acquisition = acquisition
             self._stop_requested = False
+            self._cycle_measurement = measurement
+            self._completed_recordings = []
+            self._completed_generators = []
+            self._target_count = int(state["count"]) if state["multiple"] else 1
+            self._automatic_repeat = bool(state["auto"])
+            self._waiting_for_repeat = False
+            self._next_take_at = None
+            state["recording"] = None
+            state["generator"] = None
+            state["recordings"] = []
+            state["generators"] = []
             self._clear_level_history(measurement)
             self.app.app_state.measuring = True
             self._set_controls_enabled(False)
-            self._set_status("Spectrum measurement started")
-            acquisition.start()
+            self._start_next_acquisition()
         except Exception as error:
-            self.app.app_state.measuring = False
-            self._set_controls_enabled(True)
-            self._show_error(str(error))
+            self._abort_cycle(str(error))
 
     def stop_measurement(self) -> None:
-        acquisition = self._acquisition
-        if acquisition is None or not acquisition.is_alive():
-            self.app.app_state.measuring = False
+        if not self.app.app_state.measuring:
             self._set_controls_enabled(True)
             return
         self._stop_requested = True
+        self._waiting_for_repeat = False
+        self._next_take_at = None
+        if self._view is not None:
+            self._view.hide_repeat_dialog()
+        acquisition = self._acquisition
+        if acquisition is None or not acquisition.is_alive():
+            self._finish_multiple_cycle("Spectrum measurement stopped")
+            return
         self._set_status("Stopping Spectrum measurement...")
         acquisition.request_stop()
 
+    def continue_multiple_measurement(
+        self,
+        sender=None,
+        app_data=None,
+        user_data=None,
+    ) -> None:
+        if not self.app.app_state.measuring or not self._waiting_for_repeat:
+            return
+        if self._view is not None:
+            self._view.hide_repeat_dialog()
+        self._start_next_acquisition()
+
+    def break_multiple_measurement(
+        self,
+        sender=None,
+        app_data=None,
+        user_data=None,
+    ) -> None:
+        if not self.app.app_state.measuring or not self._waiting_for_repeat:
+            return
+        self._finish_multiple_cycle("Spectrum multiple measurement stopped")
+
     def update(self) -> None:
         self._process_analysis_response()
-        level, completion, snapshot = self._take_worker_updates()
+        level, completion = self._take_worker_updates()
         if level is not None:
             self._process_level(*level)
         if completion is not None:
             self._process_completion(*completion)
-        if snapshot is not None and self._finishing_revision is None:
-            measurement, recording, generator = snapshot
-            if measurement is self._active_measurement():
-                self._submit_analysis(
-                    measurement,
-                    recording,
-                    generator,
-                    AnalysisMethod.WELCH,
-                )
+        if (
+            self._waiting_for_repeat
+            and self._next_take_at is not None
+            and monotonic() >= self._next_take_at
+        ):
+            self._start_next_acquisition()
         if self._reanalysis_requested and not self.app.app_state.measuring:
             self._reanalysis_requested = False
             self._reanalyze_stored_recording()
@@ -199,9 +204,13 @@ class SpectrumModule(BaseModule):
         self.app.app_state.measuring = False
         self._invalidate_analysis()
         with self._runtime_lock:
-            self._pending_snapshot = None
             self._pending_level = None
             self._pending_completion = None
+        self._cycle_measurement = None
+        self._completed_recordings = []
+        self._completed_generators = []
+        self._waiting_for_repeat = False
+        self._next_take_at = None
         if self._view is not None:
             self._view.destroy()
         super().deactivate()
@@ -219,6 +228,11 @@ class SpectrumModule(BaseModule):
             self._settings_window = None
         self._settings = None
         self._view = None
+        self._cycle_measurement = None
+        self._completed_recordings = []
+        self._completed_generators = []
+        self._waiting_for_repeat = False
+        self._next_take_at = None
         self.app.app_state.measuring = False
         super().shutdown()
 
@@ -228,7 +242,7 @@ class SpectrumModule(BaseModule):
         if state.get(key) == normalized:
             return normalized
         state[key] = normalized
-        if isinstance(state.get("recording"), ASignal):
+        if self._stored_takes(state)[0]:
             self._reanalysis_requested = True
         return normalized
 
@@ -237,15 +251,6 @@ class SpectrumModule(BaseModule):
         if self._settings is None:
             raise RuntimeError("Spectrum settings are not initialized")
         return self._settings
-
-    def _receive_snapshot(
-        self,
-        measurement: Measurement,
-        recording: ASignal,
-        generator: ASignal,
-    ) -> None:
-        with self._runtime_lock:
-            self._pending_snapshot = (measurement, recording, generator)
 
     def _receive_level(
         self,
@@ -288,16 +293,13 @@ class SpectrumModule(BaseModule):
             str | None,
         ]
         | None,
-        tuple[Measurement, ASignal, ASignal] | None,
     ]:
         with self._runtime_lock:
             completion = self._pending_completion
-            snapshot = self._pending_snapshot
             level = self._pending_level
             self._pending_completion = None
-            self._pending_snapshot = None
             self._pending_level = None
-        return level, completion, snapshot
+        return level, completion
 
     def _process_level(
         self,
@@ -314,6 +316,101 @@ class SpectrumModule(BaseModule):
                 duration=self._total_duration(measurement.module_state),
             )
 
+    def _start_next_acquisition(self) -> None:
+        measurement = self._cycle_measurement
+        if measurement is None or self._stop_requested:
+            return
+        state = measurement.module_state
+        take = len(self._completed_recordings) + 1
+        try:
+            online_samples = (
+                self.settings.welch_samples if self.settings.online_welch else None
+            )
+            online_revision = 0
+            online_config: SpectrumConfig | None = None
+            generator_reference = False
+            running_mean = self.settings.generator_mode == "pink noise"
+            if online_samples is not None:
+                reference = str(state["reference"])
+                reference_mode = (
+                    ReferenceMode.CHANNEL_B
+                    if reference in ("channel b", "generator")
+                    else ReferenceMode.NONE
+                )
+                generator_reference = reference == "generator"
+                online_config = self._spectrum_config(
+                    state,
+                    AnalysisMethod.WELCH,
+                    reference_mode,
+                )
+                self._analysis_revision += 1
+                online_revision = self._analysis_revision
+                self._current_revision = online_revision
+
+            def feed_online_audio(
+                recording: ASignal,
+                generator: ASignal,
+            ) -> None:
+                analyzer = self._analyzer
+                if (
+                    analyzer is None
+                    or online_config is None
+                    or online_samples is None
+                    or measurement is not self._cycle_measurement
+                    or self._stop_requested
+                ):
+                    return
+                analyzer.feed_online(
+                    online_revision,
+                    recording,
+                    online_samples,
+                    generator if generator_reference else None,
+                    online_config,
+                    running_mean=running_mean,
+                )
+
+            acquisition = SpectrumAcquisition(
+                self.app.audio_input,
+                self.app.audio_output,
+                generator_mode=self.settings.generator_mode,
+                band=FrequencyBand(*state["band"]),
+                duration=state["duration"],
+                pre_silence=self.settings.pre_silence,
+                post_silence=self.settings.post_silence,
+                fade_in=self.settings.fade_in,
+                fade_out=self.settings.fade_out,
+                online_samples=online_samples,
+                on_level=lambda times, levels: self._receive_level(
+                    measurement,
+                    times,
+                    levels,
+                ),
+                on_snapshot=feed_online_audio,
+                on_complete=(
+                    lambda recording, generator, times, levels, error: (
+                        self._receive_completion(
+                            measurement,
+                            recording,
+                            generator,
+                            times,
+                            levels,
+                            error,
+                        )
+                    )
+                ),
+            )
+            with self._runtime_lock:
+                self._pending_level = None
+                self._pending_completion = None
+            self._waiting_for_repeat = False
+            self._next_take_at = None
+            self._clear_level_history(measurement)
+            self._acquisition = acquisition
+            self._set_status(f"Spectrum measurement {take} of {self._target_count}")
+            acquisition.start()
+        except Exception as error:
+            self._abort_cycle(str(error))
+
     def _process_completion(
         self,
         measurement: Measurement,
@@ -325,46 +422,53 @@ class SpectrumModule(BaseModule):
     ) -> None:
         self._acquisition = None
         self._process_level(measurement, times, levels)
-        if recording is not None:
-            measurement.module_state["recording"] = recording
-            measurement.module_state["generator"] = generator
 
-        if measurement is not self._active_measurement():
-            self.app.app_state.measuring = False
-            self._set_controls_enabled(True)
+        if measurement is not self._active_measurement() or measurement is not self._cycle_measurement:
+            self._abort_cycle("The active Spectrum measurement changed")
+            return
+        if error is not None:
+            self._abort_cycle(error)
+            return
+        if self._stop_requested:
+            self._finish_multiple_cycle("Spectrum measurement stopped")
             return
         if recording is None:
-            self.app.app_state.measuring = False
-            self._set_controls_enabled(True)
-            message = error or "Measurement stopped before audio was recorded"
-            if error is not None:
-                self._show_error(message)
-            else:
-                self._set_status(message)
+            self._abort_cycle("Measurement stopped before audio was recorded")
             return
 
-        if error is not None:
-            self.app.app_state.measuring = False
-            self._set_controls_enabled(True)
-            self._show_error(error)
+        self._completed_recordings.append(recording)
+        self._completed_generators.append(generator)
+        self._store_completed_takes(measurement)
+        if len(self._completed_recordings) >= self._target_count:
+            self._finish_multiple_cycle("Spectrum measurement completed")
             return
-        elif self._stop_requested:
-            self._finish_status = "Spectrum measurement stopped"
-        else:
-            self._finish_status = "Spectrum measurement completed"
+
         self._submit_analysis(
             measurement,
-            recording,
-            generator,
+            self._completed_recordings,
+            self._completed_generators,
             AnalysisMethod.PERIODOGRAM,
-            finish_measurement=True,
         )
+        self._waiting_for_repeat = True
+        if self._automatic_repeat:
+            self._next_take_at = monotonic() + self.settings.measurement_pause
+            self._set_status(
+                "Spectrum measurement "
+                f"{len(self._completed_recordings)} of {self._target_count} completed; "
+                f"next in {self.settings.measurement_pause:.1f} s"
+            )
+        elif self._view is not None:
+            self._view.show_repeat_dialog(
+                len(self._completed_recordings),
+                self._target_count,
+            )
+            self._set_status("Move the microphone, then continue or break")
 
     def _submit_analysis(
         self,
         measurement: Measurement,
-        recording: ASignal,
-        generator: ASignal | None,
+        recordings: ASignal | list[ASignal],
+        generators: ASignal | None | list[ASignal | None],
         method: AnalysisMethod,
         *,
         finish_measurement: bool = False,
@@ -372,12 +476,28 @@ class SpectrumModule(BaseModule):
         if self._analyzer is None:
             raise RuntimeError("Spectrum analyzer is not initialized")
         try:
-            signal, config = self._analysis_input(recording, generator, method)
+            recording_items = (
+                recordings if isinstance(recordings, list) else [recordings]
+            )
+            generator_items = (
+                generators if isinstance(generators, list) else [generators]
+            )
+            if len(generator_items) != len(recording_items):
+                raise ValueError("Spectrum recordings and generators do not match")
+            prepared = [
+                self._analysis_input(recording, generator, method)
+                for recording, generator in zip(
+                    recording_items,
+                    generator_items,
+                    strict=True,
+                )
+            ]
+            signals = tuple(item[0] for item in prepared)
+            config = prepared[0][1]
         except Exception as error:
             self._show_error(str(error))
             if finish_measurement:
-                self.app.app_state.measuring = False
-                self._set_controls_enabled(True)
+                self._complete_cycle_ui()
             return
 
         self._analysis_revision += 1
@@ -385,7 +505,7 @@ class SpectrumModule(BaseModule):
         self._current_revision = revision
         if finish_measurement:
             self._finishing_revision = revision
-        self._analyzer.submit(revision, finish_measurement, signal, config)
+        self._analyzer.submit(revision, finish_measurement, signals, config)
 
     def _process_analysis_response(self) -> None:
         if self._analyzer is None:
@@ -396,32 +516,118 @@ class SpectrumModule(BaseModule):
         revision, finishing, result, error = response
         if revision != self._current_revision:
             return
-        if error is not None or result is None:
-            self._show_error(error or "Calculation failed")
-        else:
+        if error is not None:
+            self._show_error(error)
+        elif result is not None:
             measurement = self._active_measurement()
             if measurement is not None:
                 self._update_graph(measurement, result.frequency, result.values)
 
         if finishing and revision == self._finishing_revision:
             self._finishing_revision = None
-            self.app.app_state.measuring = False
-            self._set_controls_enabled(True)
+            self._complete_cycle_ui()
             if error is None:
                 self._set_status(self._finish_status)
 
     def _reanalyze_stored_recording(self) -> None:
         state = self.measurement.module_state
-        recording = state.get("recording")
-        generator = state.get("generator")
-        if not isinstance(recording, ASignal):
+        recordings, generators = self._stored_takes(state)
+        if not recordings:
             return
         self._submit_analysis(
             self.measurement,
-            recording,
-            generator if isinstance(generator, ASignal) else None,
+            recordings,
+            generators,
             AnalysisMethod.PERIODOGRAM,
         )
+
+    def _finish_multiple_cycle(self, status: str) -> None:
+        measurement = self._cycle_measurement
+        self._waiting_for_repeat = False
+        self._next_take_at = None
+        if self._view is not None:
+            self._view.hide_repeat_dialog()
+        if measurement is None or not self._completed_recordings:
+            self._complete_cycle_ui()
+            self._set_status("Spectrum measurement stopped without completed takes")
+            return
+        self._store_completed_takes(measurement)
+        self._finish_status = status
+        self._submit_analysis(
+            measurement,
+            self._completed_recordings,
+            self._completed_generators,
+            AnalysisMethod.PERIODOGRAM,
+            finish_measurement=True,
+        )
+
+    def _abort_cycle(self, message: str) -> None:
+        acquisition = self._acquisition
+        if acquisition is not None and acquisition.is_alive():
+            acquisition.request_stop()
+        self._store_completed_takes(self._cycle_measurement)
+        self._complete_cycle_ui()
+        self._show_error(message)
+
+    def _complete_cycle_ui(self) -> None:
+        self.app.app_state.measuring = False
+        self._set_controls_enabled(True)
+        if self._view is not None:
+            self._view.hide_repeat_dialog()
+        self._acquisition = None
+        self._cycle_measurement = None
+        self._completed_recordings = []
+        self._completed_generators = []
+        self._waiting_for_repeat = False
+        self._next_take_at = None
+        self._stop_requested = False
+
+    def _store_completed_takes(self, measurement: Measurement | None) -> None:
+        if measurement is None:
+            return
+        state = measurement.module_state
+        if self._target_count > 1:
+            state["recording"] = None
+            state["generator"] = None
+            state["recordings"] = list(self._completed_recordings)
+            state["generators"] = list(self._completed_generators)
+        elif self._completed_recordings:
+            state["recording"] = self._completed_recordings[0]
+            state["generator"] = self._completed_generators[0]
+            state["recordings"] = []
+            state["generators"] = []
+
+    @staticmethod
+    def _stored_takes(
+        state: dict[str, Any],
+    ) -> tuple[list[ASignal], list[ASignal | None]]:
+        recordings_value = state.get("recordings")
+        generators_value = state.get("generators")
+        if (
+            isinstance(recordings_value, list)
+            and recordings_value
+            and all(isinstance(item, ASignal) for item in recordings_value)
+        ):
+            recordings: list[ASignal] = list(recordings_value)
+            generators: list[ASignal | None]
+            if (
+                isinstance(generators_value, list)
+                and len(generators_value) == len(recordings)
+                and all(
+                    item is None or isinstance(item, ASignal)
+                    for item in generators_value
+                )
+            ):
+                generators = list(generators_value)
+            else:
+                generators = [None for _ in recordings]
+            return recordings, generators
+
+        recording = state.get("recording")
+        if not isinstance(recording, ASignal):
+            return [], []
+        generator = state.get("generator")
+        return [recording], [generator if isinstance(generator, ASignal) else None]
 
     def _analysis_input(
         self,
@@ -455,7 +661,16 @@ class SpectrumModule(BaseModule):
         elif reference != "none":
             raise ValueError(f"Unknown reference: {reference}")
 
-        config = SpectrumConfig(
+        return signal, self._spectrum_config(state, method, reference_mode)
+
+    def _spectrum_config(
+        self,
+        state: dict[str, Any],
+        method: AnalysisMethod,
+        reference_mode: ReferenceMode,
+    ) -> SpectrumConfig:
+        reference = state["reference"]
+        return SpectrumConfig(
             method=method,
             reference=reference_mode,
             band=FrequencyBand(*state["band"]),
@@ -463,9 +678,8 @@ class SpectrumModule(BaseModule):
             window=SmoothingWindow(state["window"]),
             window_width=state["window_width"],
             welch_samples=self.settings.welch_samples,
-            pink_weighting=state["weighting"] == "pink",
+            pink_weighting=(reference == "none" and state["weighting"] == "pink"),
         )
-        return signal, config
 
     def _update_graph(self, measurement: Measurement, x, y) -> None:
         if measurement.graphs:
@@ -564,6 +778,10 @@ class SpectrumModule(BaseModule):
             return low, high
         if key == "duration":
             return min(100.0, max(1.0, float(value)))
+        if key in ("multiple", "auto"):
+            return bool(value)
+        if key == "count":
+            return min(100, max(2, int(value)))
         if key == "reference":
             if value not in ("none", "channel b", "generator"):
                 raise ValueError(f"Unknown reference: {value}")

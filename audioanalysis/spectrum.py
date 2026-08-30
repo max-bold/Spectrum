@@ -52,9 +52,32 @@ def analyze_spectrum(
         method=config.method,
         welch_samples=config.welch_samples,
     )
+    return smooth_power_spectrum(frequency, spectrum, config)
+
+
+def smooth_power_spectrum(
+    frequency: NDArray[np.floating],
+    spectrum: NDArray[np.floating],
+    config: SpectrumConfig,
+) -> SpectrumResult:
+    """Apply reference, weighting and log smoothing to a linear power spectrum."""
+    frequency = np.asarray(frequency, dtype=np.float64)
+    spectrum = np.asarray(spectrum, dtype=np.float64)
+    if frequency.ndim != 1:
+        raise ValueError("Spectrum frequency must be one-dimensional")
+    if len(frequency) < 2:
+        raise ValueError("Power spectrum must contain at least two frequencies")
+    if spectrum.ndim != 2 or spectrum.shape[0] != frequency.shape[0]:
+        raise ValueError("Power spectrum must contain one row per frequency")
+    config.band.validate(nyquist=float(frequency[-1]))
+
     values = _apply_reference(spectrum, config.reference)
     if config.pink_weighting:
         values = values * frequency
+    band_low, band_high = config.band.as_tuple()
+    in_band = (frequency >= band_low) & (frequency <= band_high)
+    frequency = frequency[in_band]
+    values = values[in_band]
     output_frequency, output_values = log_smooth(
         frequency,
         values,

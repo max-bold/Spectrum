@@ -26,10 +26,16 @@ v0.3
 + Automatically choose the RTA smoothing width from point count and band spacing
 + Preserve graph colors when the list of visible graphs changes - done
 
+v0.3.1
++ Investigate RTA spectrum nonuniformity over time - done
++ Implement multi-record mode with averaging - done
++ Prevent out-of-band Spectrum FFT bins from affecting smoothing at band edges - done
++ Optimize Spectrum reference and weighting controls for normal operation - done
++ Optimize Spectrum online Welch with incremental overlapping-window accumulation - done
+
 v0.4
 - Investigate caching smoothing windows in `log_smooth()` and `grid_smooth()`; see [info/smoothing_window_cache.md](info/smoothing_window_cache.md)
 - Improve the delay-fitting algorithm for phase measurements
-- Implement multi-record mode with averaging
 
 v0.5
 - Verify SPICE model fitting against real impedance measurements

@@ -4,6 +4,7 @@ from .audioio import AudioDevice, list_devices, play_and_record
 from .generators import (
     extend_log_sweep_band,
     log_chirp,
+    periodic_pink_noise,
     pink_noise,
     pinking_sos,
     white_noise,
@@ -65,6 +66,7 @@ from .spectrum import (
     magnitude_db,
     phase_degrees,
     power_db,
+    smooth_power_spectrum,
 )
 from .thd import (
     SemiAnalogTHDConfig,
@@ -139,12 +141,14 @@ __all__ = [
     "phase_derivative",
     "wrap_phase",
     "phase_degrees",
+    "periodic_pink_noise",
     "pink_noise",
     "pinking_sos",
     "play_and_record",
     "power_db",
     "require_valid_reference_calibration",
     "speaker_impedance",
+    "smooth_power_spectrum",
     "thd_from_spectrum",
     "trim_recording",
     "white_noise",

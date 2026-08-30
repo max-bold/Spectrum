@@ -13,6 +13,10 @@ from spectrum_app.core.audio import AudioInput, AudioOutput
 from spectrum_app.core.model import AxisSpec, PlotType
 from spectrum_app.modules.rta import RTAModule
 from spectrum_app.modules.rta.settings import RTASettings, RTASettingsWindow
+from spectrum_app.modules.rta.types import (
+    FILTERED_IIR_GENERATOR,
+    PERIODIC_IFFT_GENERATOR,
+)
 from spectrum_app.modules.rta.view import RTAView
 from tests.test_dpg_lifecycle import FakeDpgBackend
 
@@ -63,6 +67,10 @@ class RecordingRTAOutput:
         return True
 
 
+class MismatchedRateRTAOutput(RecordingRTAOutput):
+    sample_rate = 12_000
+
+
 class RTAModuleTests(unittest.TestCase):
     def test_intermediate_band_input_is_normalized_without_gui_exception(self) -> None:
         self.assertEqual(RTAModule._normalize_setting("band", (0, 0)), (1, 2))
@@ -70,6 +78,8 @@ class RTAModuleTests(unittest.TestCase):
             RTAModule._normalize_setting("band", (1_000, 100)),
             (1_000, 1_001),
         )
+        self.assertEqual(RTAModule._normalize_setting("points", 1), 24)
+        self.assertEqual(RTAModule._normalize_setting("points", 10_000), 2048)
 
     def test_view_builds_rta_controls_and_compact_level_meter(self) -> None:
         backend = FakeDpgBackend()
@@ -109,6 +119,25 @@ class RTAModuleTests(unittest.TestCase):
                 self.assertEqual(slider[1]["min_value"], -10.0)
                 self.assertEqual(slider[1]["max_value"], 10.0)
                 self.assertTrue(slider[1]["clamped"])
+                points_input = next(
+                    call
+                    for call in backend.calls
+                    if call[0] == "add_input_int"
+                    and call[1].get("tag") == RTAView.POINTS
+                )
+                self.assertEqual(points_input[1]["min_value"], 24)
+                self.assertEqual(points_input[1]["max_value"], 2048)
+                self.assertTrue(points_input[1]["min_clamped"])
+                self.assertTrue(points_input[1]["max_clamped"])
+                self.assertTrue(points_input[1]["on_enter"])
+                self.assertIn(
+                    (
+                        "bind_item_handler_registry",
+                        RTAView.POINTS,
+                        RTAView.POINTS_HANDLERS,
+                    ),
+                    backend.calls,
+                )
                 self.assertTrue(
                     any(
                         call[0] == "group"
@@ -119,7 +148,18 @@ class RTAModuleTests(unittest.TestCase):
                 assert module._view is not None
                 backend.calls.clear()
                 with patch.object(backend, "does_item_exist", return_value=True):
+                    module._view.update_generator_visibility(
+                        PERIODIC_IFFT_GENERATOR
+                    )
                     module._view.set_enabled(False)
+                self.assertIn(
+                    (
+                        "configure_item",
+                        RTAView.LEVEL_GROUP,
+                        {"show": False},
+                    ),
+                    backend.calls,
+                )
                 self.assertIn(
                     (
                         "configure_item",
@@ -215,7 +255,8 @@ class RTAModuleTests(unittest.TestCase):
 
         self.assertEqual(settings.mode, "mono")
         self.assertEqual(settings.plot_type, "auto")
-        self.assertEqual(settings.window_function, "hann")
+        self.assertEqual(settings.window_function, "boxcar")
+        self.assertEqual(settings.generator, PERIODIC_IFFT_GENERATOR)
         self.assertEqual(settings.pre_silence, 0.1)
         self.assertEqual(settings.fade_in, 0.5)
         self.assertEqual(settings.fade_out, 0.5)
@@ -223,6 +264,7 @@ class RTAModuleTests(unittest.TestCase):
         settings.mode = "stereo"
         settings.plot_type = "line"
         settings.window_function = "blackman"
+        settings.generator = FILTERED_IIR_GENERATOR
         settings.pre_silence = 0.2
         settings.fade_in = 0.3
         settings.fade_out = 0.4
@@ -234,11 +276,84 @@ class RTAModuleTests(unittest.TestCase):
                 "mode",
                 "plot_type",
                 "window_function",
+                "generator",
                 "pre_silence",
                 "fade_in",
                 "fade_out",
             ],
         )
+
+    def test_periodic_generator_warns_about_sample_rate_mismatch(self) -> None:
+        app = SpectrumApplication()
+        app.audio_input = cast(AudioInput, ContinuousRTAInput())
+        app.audio_output = cast(AudioOutput, MismatchedRateRTAOutput())
+        app.main_window.set_status_text = MagicMock()
+        measurement = app.create_measurement("rta")
+        measurement.module_state["band"] = (50, 3_000)
+        module = cast(RTAModule, app.module_manager.module("rta"))
+        worker = MagicMock()
+        worker.is_alive.return_value = False
+
+        with (
+            patch.object(RTASettingsWindow, "build"),
+            patch.object(RTASettingsWindow, "destroy"),
+            patch.object(RTAView, "build"),
+            patch.object(RTAView, "destroy"),
+            patch.object(RTAView, "set_enabled"),
+            patch("spectrum_app.modules.rta.module.RTAIOWorker", return_value=worker),
+        ):
+            module.initialize(app)
+            module.activate(measurement)
+            try:
+                module.start_measurement()
+
+                statuses = [
+                    call.args[0]
+                    for call in app.main_window.set_status_text.call_args_list
+                ]
+                self.assertTrue(
+                    any("spectral leakage" in status for status in statuses)
+                )
+            finally:
+                module._io_worker = None
+                app.app_state.measuring = False
+                module.deactivate()
+                module.shutdown()
+
+    def test_switching_to_periodic_generator_resets_all_rta_levels(self) -> None:
+        app = SpectrumApplication()
+        app.main_window.set_status_text = lambda text: None
+        first = app.create_measurement("rta")
+        second = app.create_measurement("rta")
+        other = app.create_measurement("spectrum")
+        first.module_state["level_db"] = 6.0
+        second.module_state["level_db"] = -4.0
+        other.module_state["level_db"] = 3.0
+        app.settings.set_module_setting(
+            "rta",
+            "generator",
+            FILTERED_IIR_GENERATOR,
+        )
+        module = cast(RTAModule, app.module_manager.module("rta"))
+
+        with (
+            patch.object(RTASettingsWindow, "build"),
+            patch.object(RTASettingsWindow, "destroy"),
+            patch.object(RTAView, "build"),
+            patch.object(RTAView, "destroy"),
+            patch.object(RTAView, "update_generator_visibility"),
+        ):
+            module.initialize(app)
+            module.activate(first)
+            try:
+                module.settings.generator = PERIODIC_IFFT_GENERATOR
+
+                self.assertEqual(first.module_state["level_db"], 0.0)
+                self.assertEqual(second.module_state["level_db"], 0.0)
+                self.assertEqual(other.module_state["level_db"], 3.0)
+            finally:
+                module.deactivate()
+                module.shutdown()
 
     def test_smoothing_settings_update_running_analyzer_config(self) -> None:
         app = SpectrumApplication()

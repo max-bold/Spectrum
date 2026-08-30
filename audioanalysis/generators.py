@@ -32,6 +32,8 @@ PINKING_SOS = np.array(
 )
 PINKING_REFERENCE_SAMPLE_RATE = 44_100
 PINKING_GAIN_REFERENCE_FREQUENCY = 1_000.0
+PERIODIC_PINK_FILTER_ORDER = 4
+PERIODIC_PINK_EDGE_ATTENUATION_DB = 0.5
 
 
 def extend_log_sweep_band(
@@ -196,6 +198,64 @@ def pink_noise(
 
     pink, zf = sosfilt(combined_sos, white, zi=zi)
     return ASignal(pink, sample_rate), cast(NDArray[np.float64], zf)
+
+
+def periodic_pink_noise(
+    samples: int,
+    sample_rate: int = 44_100,
+    band: FrequencyBand = FrequencyBand(),
+    *,
+    amplitude: float = 0.9,
+    rng: np.random.Generator | None = None,
+) -> ASignal:
+    """Generate one peak-normalized period of band-limited pink noise.
+
+    The signal is synthesized directly on the real-FFT grid. Its amplitude is
+    proportional to ``1 / sqrt(f)`` and its phase is random, so repeating the
+    returned samples forms a seamless periodic signal whose frequencies match
+    the FFT bins for this exact sample count.
+
+    The fourth-order high- and low-pass envelopes use internal cutoff
+    frequencies outside ``band``. The expansion places the requested band
+    edges at -0.5 dB instead of the -3 dB Butterworth cutoff points.
+    """
+    if samples <= 0:
+        raise ValueError("Sample count must be positive")
+    if amplitude <= 0.0:
+        raise ValueError("Noise amplitude must be positive")
+    band.validate(nyquist=sample_rate / 2.0)
+
+    frequency = np.fft.rfftfreq(samples, 1.0 / sample_rate)
+    spectral_amplitude = np.zeros_like(frequency)
+    positive = frequency > 0.0
+    positive_frequency = frequency[positive]
+
+    edge_ratio = (
+        10.0 ** (PERIODIC_PINK_EDGE_ATTENUATION_DB / 10.0) - 1.0
+    ) ** (1.0 / (2.0 * PERIODIC_PINK_FILTER_ORDER))
+    internal_low = band.low * edge_ratio
+    internal_high = band.high / edge_ratio
+    exponent = 2 * PERIODIC_PINK_FILTER_ORDER
+
+    pink = 1.0 / np.sqrt(positive_frequency)
+    high_pass = 1.0 / np.sqrt(
+        1.0 + (internal_low / positive_frequency) ** exponent
+    )
+    low_pass = 1.0 / np.sqrt(
+        1.0 + (positive_frequency / internal_high) ** exponent
+    )
+    spectral_amplitude[positive] = pink * high_pass * low_pass
+
+    generator = rng or np.random.default_rng()
+    phase = generator.uniform(0.0, 2.0 * np.pi, len(frequency))
+    spectrum = spectral_amplitude * np.exp(1j * phase)
+    spectrum[0] = 0.0
+    if samples % 2 == 0:
+        sign = 1.0 if phase[-1] < np.pi else -1.0
+        spectrum[-1] = sign * spectral_amplitude[-1]
+
+    signal = np.fft.irfft(spectrum, n=samples)
+    return ASignal(signal, sample_rate).normalize(amplitude)
 
 
 _PINK_NOISE_THREAD_DISABLED = r'''
