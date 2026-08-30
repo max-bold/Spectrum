@@ -20,6 +20,7 @@ class SpectrumSettings:
     DEFAULT_POST_SILENCE = 1.0
     DEFAULT_FADE_IN = 0.5
     DEFAULT_FADE_OUT = 0.5
+    DEFAULT_MEASUREMENT_PAUSE = 5.0
 
     def __init__(self, app_settings: AppSettings) -> None:
         self._app_settings = app_settings
@@ -116,6 +117,26 @@ class SpectrumSettings:
     def fade_out(self, value: float) -> None:
         self._set_time_setting("fade_out", value)
 
+    @property
+    def measurement_pause(self) -> float:
+        value = self._app_settings.module_setting(
+            self.MODULE_ID,
+            "measurement_pause",
+            self.DEFAULT_MEASUREMENT_PAUSE,
+        )
+        try:
+            return self._normalize_measurement_pause(value)
+        except (TypeError, ValueError):
+            return self.DEFAULT_MEASUREMENT_PAUSE
+
+    @measurement_pause.setter
+    def measurement_pause(self, value: float) -> None:
+        self._app_settings.set_module_setting(
+            self.MODULE_ID,
+            "measurement_pause",
+            self._normalize_measurement_pause(value),
+        )
+
     def _time_setting(self, key: str, default: float) -> float:
         value = self._app_settings.module_setting(self.MODULE_ID, key, default)
         try:
@@ -135,6 +156,10 @@ class SpectrumSettings:
         return min(10.0, max(0.0, float(value)))
 
     @staticmethod
+    def _normalize_measurement_pause(value: Any) -> float:
+        return min(3600.0, max(0.0, float(value)))
+
+    @staticmethod
     def _normalize_welch_samples(value: Any) -> int:
         samples = max(16, int(value))
         lower = 1 << (samples.bit_length() - 1)
@@ -144,7 +169,7 @@ class SpectrumSettings:
 
 class SpectrumSettingsWindow:
     WIDTH = 480
-    HEIGHT = 390
+    HEIGHT = 430
     TAG = "module::spectrum::settings"
     MENU_ITEM = "module::spectrum::settings_menu_item"
 
@@ -162,6 +187,7 @@ class SpectrumSettingsWindow:
         self.post_silence = "module::spectrum::settings::post_silence"
         self.fade_in = "module::spectrum::settings::fade_in"
         self.fade_out = "module::spectrum::settings::fade_out"
+        self.measurement_pause = "module::spectrum::settings::measurement_pause"
 
     def build(self) -> None:
         dpg.add_menu_item(
@@ -214,8 +240,14 @@ class SpectrumSettingsWindow:
                 self.settings.post_silence,
                 self._set_post_silence,
             )
+            self._add_time(
+                "Measurement pause, s",
+                self.measurement_pause,
+                self.settings.measurement_pause,
+                self._set_measurement_pause,
+            )
             dpg.add_separator()
-            dpg.add_text("Welch bucket size, samples")
+            dpg.add_text("Online bucket size, samples")
             dpg.add_input_int(
                 tag=self.welch_samples,
                 default_value=self.settings.welch_samples,
@@ -263,6 +295,7 @@ class SpectrumSettingsWindow:
         dpg.set_value(self.post_silence, self.settings.post_silence)
         dpg.set_value(self.fade_in, self.settings.fade_in)
         dpg.set_value(self.fade_out, self.settings.fade_out)
+        dpg.set_value(self.measurement_pause, self.settings.measurement_pause)
 
     def _add_time(self, label: str, tag: str, value: float, callback) -> None:
         dpg.add_text(label)
@@ -332,3 +365,8 @@ class SpectrumSettingsWindow:
         if self._change_allowed():
             self.settings.fade_out = value
             dpg.set_value(sender, self.settings.fade_out)
+
+    def _set_measurement_pause(self, sender, value: float, user_data=None) -> None:
+        if self._change_allowed():
+            self.settings.measurement_pause = value
+            dpg.set_value(sender, self.settings.measurement_pause)

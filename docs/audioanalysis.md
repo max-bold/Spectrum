@@ -9,7 +9,8 @@ frequency grids.
 
 The package is intentionally split into pure analysis modules and optional audio-device integration:
 
-- `audioanalysis.generators` - mono test-signal generators.
+- `audioanalysis.generators` - mono test-signal generators, including
+  `periodic_pink_noise()` for FFT-bin-aligned periodic excitation.
 - `audioanalysis.smoothing` - logarithmic smoothing windows and grids.
 - `audioanalysis.spectrum` - periodogram/Welch analysis and reference-channel math.
 - `audioanalysis.rta` - configurable multichannel periodogram analysis on a

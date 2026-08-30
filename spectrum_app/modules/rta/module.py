@@ -11,6 +11,7 @@ from spectrum_app.core.model import AxisSpec, GraphData, Measurement, PlotType
 from spectrum_app.modules.base import BaseModule
 from spectrum_app.modules.rta.jobs import RTAAnalyzer, RTAIOWorker, RTARuntimeConfig
 from spectrum_app.modules.rta.settings import RTASettings, RTASettingsWindow
+from spectrum_app.modules.rta.types import PERIODIC_IFFT_GENERATOR
 from spectrum_app.modules.rta.view import RTAView
 
 if TYPE_CHECKING:
@@ -73,6 +74,8 @@ class RTAModule(BaseModule):
     def activate(self, measurement: Measurement) -> None:
         super().activate(measurement)
         self._ensure_state(measurement.module_state)
+        if self.settings.generator == PERIODIC_IFFT_GENERATOR:
+            measurement.module_state["level_db"] = 0.0
         if self._view is None:
             raise RuntimeError("RTA module is not initialized")
         self._view.build(
@@ -131,7 +134,15 @@ class RTAModule(BaseModule):
             self._io_worker = worker
             self.app.app_state.measuring = True
             self._set_controls_enabled(False)
-            self._set_status("RTA measurement started")
+            status = "RTA measurement started"
+            if (
+                runtime.noise
+                and runtime.generator == PERIODIC_IFFT_GENERATOR
+                and self.app.audio_input.sample_rate
+                != self.app.audio_output.sample_rate
+            ):
+                status += "; warning: sample-rate mismatch may cause spectral leakage"
+            self._set_status(status)
             worker.start()
         except Exception as error:
             self.app.app_state.measuring = False
@@ -412,6 +423,15 @@ class RTAModule(BaseModule):
         return PlotType.LINE
 
     def _settings_changed(self, key: str) -> None:
+        if key == "generator":
+            for item in self.app.app_state.measurements:
+                if item.module_id == self.id:
+                    item.module_state["level_db"] = 0.0
+            if self._view is not None:
+                self._view.update_generator_visibility(self.settings.generator)
+            if self._active_measurement() is not None:
+                self._set_status("RTA generator changed; level reset to 0 dB")
+            return
         measurement = self._active_measurement()
         if measurement is None:
             return
@@ -454,7 +474,12 @@ class RTAModule(BaseModule):
         return RTARuntimeConfig(
             band=band,
             noise=bool(state["noise"]),
-            level_db=float(state["level_db"]),
+            generator=self.settings.generator,
+            level_db=(
+                0.0
+                if self.settings.generator == PERIODIC_IFFT_GENERATOR
+                else float(state["level_db"])
+            ),
             window_seconds=float(state["window_width"]),
             hop_seconds=float(state["window_hop"]),
             pre_silence=self.settings.pre_silence,
@@ -547,7 +572,7 @@ class RTAModule(BaseModule):
         if key == "window_hop":
             return min(10.0, max(0.001, float(value)))
         if key == "points":
-            return min(10_000, max(2, int(value)))
+            return min(2048, max(24, int(value)))
         if key == "smoothing_octaves":
             return min(4.0, max(0.01, float(value)))
         raise ValueError(f"Unknown RTA setting: {key}")

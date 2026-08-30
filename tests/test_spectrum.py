@@ -1,5 +1,6 @@
 import unittest
 from typing import Any, cast
+from unittest.mock import patch
 
 import numpy as np
 from scipy.signal import periodogram, welch
@@ -8,6 +9,7 @@ from audioanalysis import (
     ASignal,
     AnalysisMethod,
     FrequencyBand,
+    ReferenceMode,
     SpectrumConfig,
     analyze_spectrum,
     calculate_power_spectrum,
@@ -20,6 +22,28 @@ from audioanalysis import (
 
 
 class SpectrumAnalysisTests(unittest.TestCase):
+    def test_analyzer_excludes_out_of_band_fft_bins_before_smoothing(self) -> None:
+        frequency = np.arange(0.0, 24_001.0)
+        spectrum = np.ones((len(frequency), 2), dtype=np.float64)
+        spectrum[frequency > 20_000.0, 0] = 1e12
+        signal = ASignal(np.ones((128, 2), dtype=np.float32), 48_000)
+
+        with patch(
+            "audioanalysis.spectrum.calculate_power_spectrum",
+            return_value=(frequency, spectrum),
+        ):
+            result = analyze_spectrum(
+                signal,
+                SpectrumConfig(
+                    reference=ReferenceMode.CHANNEL_B,
+                    band=FrequencyBand(20.0, 20_000.0),
+                    window_width=0.3,
+                    points=1024,
+                ),
+            )
+
+        np.testing.assert_allclose(result.values, 1.0)
+
     def test_periodogram_matches_scipy_for_every_channel(self) -> None:
         rng = np.random.default_rng(1234)
         signal = ASignal(rng.normal(size=(2048, 2)), 48_000)

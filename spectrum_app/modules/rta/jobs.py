@@ -13,9 +13,15 @@ from audioanalysis import (
     RTAConfig,
     RTAResult,
     analyze_rta,
+    periodic_pink_noise,
     pink_noise,
 )
 from spectrum_app.core.audio import CLIPPING_THRESHOLD, AudioInput, AudioOutput
+from spectrum_app.modules.rta.types import (
+    FILTERED_IIR_GENERATOR,
+    PERIODIC_IFFT_GENERATOR,
+    RTANoiseGeneratorType,
+)
 
 LevelCallback = Callable[[tuple[float, float]], None]
 SnapshotCallback = Callable[[ASignal], None]
@@ -28,6 +34,7 @@ AnalysisResponse = tuple[int, ASignal, RTAResult | None, str | None]
 class RTARuntimeConfig:
     band: FrequencyBand
     noise: bool
+    generator: RTANoiseGeneratorType
     level_db: float
     window_seconds: float
     hop_seconds: float
@@ -46,7 +53,9 @@ class RTANoiseGenerator(Thread):
         *,
         sample_rate: int,
         block_size: int,
+        period_samples: int,
         band: FrequencyBand,
+        generator: RTANoiseGeneratorType,
         level_db: float,
         pre_silence: float,
         fade_in: float,
@@ -57,7 +66,9 @@ class RTANoiseGenerator(Thread):
         super().__init__(name="rta-generator", daemon=True)
         self.sample_rate = sample_rate
         self.block_size = max(1, int(block_size))
+        self.period_samples = max(2, int(period_samples))
         self.band = band
+        self.generator = generator
         self.level_gain = 10.0 ** (float(level_db) / 20.0)
         self.pre_samples = max(0, int(round(pre_silence * sample_rate)))
         self.fade_in_samples = max(0, int(round(fade_in * sample_rate)))
@@ -70,6 +81,8 @@ class RTANoiseGenerator(Thread):
         self._abort_requested = False
         self._error: BaseException | None = None
         self._zi: NDArray[np.float64] | None = None
+        self._period: NDArray[np.float64] | None = None
+        self._period_position = 0
         self._rng = rng or np.random.default_rng()
         self._pre_position = 0
         self._noise_position = 0
@@ -146,6 +159,39 @@ class RTANoiseGenerator(Thread):
                 return None
             samples = min(samples, remaining)
 
+        data = self._next_noise(samples)
+        envelope = self._envelope(samples)
+        output = data * envelope
+        if np.any(np.abs(output) >= CLIPPING_THRESHOLD):
+            if not self._clipping_reported:
+                self._clipping_reported = True
+                message = "Output clipping detected; reduce the RTA noise level"
+                self.on_clipping(message)
+                raise RuntimeError(message)
+        return np.asarray(output, dtype=np.float32)
+
+    def _next_noise(self, samples: int) -> NDArray[np.float64]:
+        if self.generator == PERIODIC_IFFT_GENERATOR:
+            if self._period is None:
+                signal = periodic_pink_noise(
+                    self.period_samples,
+                    self.sample_rate,
+                    self.band,
+                    amplitude=self.BASE_AMPLITUDE,
+                    rng=self._rng,
+                )
+                self._period = signal.as_array(np.float64)[:, 0]
+            indexes = (
+                self._period_position + np.arange(samples, dtype=np.int64)
+            ) % len(self._period)
+            output = self._period[indexes]
+            self._period_position = (
+                self._period_position + samples
+            ) % len(self._period)
+            return output
+
+        if self.generator != FILTERED_IIR_GENERATOR:
+            raise ValueError(f"Unknown RTA noise generator: {self.generator}")
         signal, self._zi = pink_noise(
             samples,
             self.sample_rate,
@@ -154,16 +200,7 @@ class RTANoiseGenerator(Thread):
             rng=self._rng,
             zi=self._zi,
         )
-        data = signal.as_array(np.float64)[:, 0]
-        envelope = self._envelope(samples)
-        output = data * envelope * self.level_gain
-        if np.any(np.abs(output) >= CLIPPING_THRESHOLD):
-            if not self._clipping_reported:
-                self._clipping_reported = True
-                message = "Output clipping detected; reduce the RTA noise level"
-                self.on_clipping(message)
-                raise RuntimeError(message)
-        return np.asarray(output, dtype=np.float32)
+        return signal.as_array(np.float64)[:, 0] * self.level_gain
 
     def _envelope(self, samples: int) -> NDArray[np.float64]:
         if self._fade_out_position is not None:
@@ -281,7 +318,9 @@ class RTAIOWorker(Thread):
         generator = RTANoiseGenerator(
             sample_rate=output_rate,
             block_size=self.audio_output.blocksize,
+            period_samples=max(2, int(self.config.window_seconds * output_rate)),
             band=self.config.band,
+            generator=self.config.generator,
             level_db=self.config.level_db,
             pre_silence=self.config.pre_silence,
             fade_in=self.config.fade_in,

@@ -11,6 +11,15 @@ if TYPE_CHECKING:
 
 class SpectrumView:
     ROOT = "module::spectrum::controls"
+    MULTIPLE = "module::spectrum::multiple"
+    MULTIPLE_CONTROLS = "module::spectrum::multiple_controls"
+    COUNT = "module::spectrum::multiple_count"
+    AUTO = "module::spectrum::multiple_auto"
+    WEIGHTING_GROUP = "module::spectrum::weighting_group"
+    REPEAT_DIALOG = "module::spectrum::repeat_dialog"
+    REPEAT_TEXT = "module::spectrum::repeat_text"
+    REPEAT_DIALOG_WIDTH = 560
+    REPEAT_DIALOG_HEIGHT = 160
     LEVEL_PLOT = "module::spectrum::level_plot"
     LEVEL_X_AXIS = "module::spectrum::level_x_axis"
     LEVEL_Y_AXIS = "module::spectrum::level_y_axis"
@@ -48,6 +57,34 @@ class SpectrumView:
                     step=0,
                     callback=self._set_duration,
                 )
+                dpg.add_checkbox(
+                    label="Multiple",
+                    tag=self.MULTIPLE,
+                    default_value=state["multiple"],
+                    callback=self._set_multiple,
+                )
+                with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
+                    tag=self.MULTIPLE_CONTROLS,
+                    show=state["multiple"],
+                ):
+                    dpg.add_text("Count")
+                    dpg.add_input_int(
+                        tag=self.COUNT,
+                        default_value=state["count"],
+                        min_value=2,
+                        max_value=100,
+                        min_clamped=True,
+                        max_clamped=True,
+                        step=0,
+                        width=-1,
+                        callback=self._set_count,
+                    )
+                    dpg.add_checkbox(
+                        label="Auto",
+                        tag=self.AUTO,
+                        default_value=state["auto"],
+                        callback=self._set_auto,
+                    )
 
             with dpg.collapsing_header(  # pyright: ignore[reportGeneralTypeIssues]
                 label="Analyzer",
@@ -60,13 +97,17 @@ class SpectrumView:
                     width=-1,
                     callback=self._set_reference,
                 )
-                dpg.add_text("Weighting")
-                dpg.add_combo(
-                    ["none", "pink"],
-                    default_value=state["weighting"],
-                    width=-1,
-                    callback=self._set_weighting,
-                )
+                with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
+                    tag=self.WEIGHTING_GROUP,
+                    show=state["reference"] == "none",
+                ):
+                    dpg.add_text("Weighting")
+                    dpg.add_combo(
+                        ["none", "pink"],
+                        default_value=state["weighting"],
+                        width=-1,
+                        callback=self._set_weighting,
+                    )
             with dpg.collapsing_header(  # pyright: ignore[reportGeneralTypeIssues]
                 label="Smoothing",
                 default_open=True,
@@ -128,14 +169,65 @@ class SpectrumView:
             duration=float(state["duration"]),
         )
 
+        with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
+            label="Spectrum multiple measurement",
+            tag=self.REPEAT_DIALOG,
+            width=self.REPEAT_DIALOG_WIDTH,
+            height=self.REPEAT_DIALOG_HEIGHT,
+            show=False,
+            modal=True,
+            no_resize=True,
+            no_collapse=True,
+            on_close=self.module.break_multiple_measurement,
+        ):
+            dpg.add_text(
+                "Move the microphone before the next measurement",
+                tag=self.REPEAT_TEXT,
+                wrap=self.REPEAT_DIALOG_WIDTH - 30,
+            )
+            dpg.add_button(
+                label="Continue",
+                width=-1,
+                callback=self.module.continue_multiple_measurement,
+            )
+            dpg.add_button(
+                label="Break",
+                width=-1,
+                callback=self.module.break_multiple_measurement,
+            )
+
     def destroy(self) -> None:
-        for item in (self.ROOT, self.LEVEL_PLOT):
+        for item in (self.ROOT, self.LEVEL_PLOT, self.REPEAT_DIALOG):
             if dpg.does_item_exist(item):
                 dpg.delete_item(item)
 
     def set_enabled(self, enabled: bool) -> None:
         if dpg.does_item_exist(self.ROOT):
             dpg.configure_item(self.ROOT, enabled=enabled)
+
+    def show_repeat_dialog(self, completed: int, total: int) -> None:
+        dpg.set_value(
+            self.REPEAT_TEXT,
+            "Move the microphone before the next measurement\n"
+            f"Completed: {completed} of {total}",
+        )
+        main_position = dpg.get_item_pos(self.module.app.main_window.tag)
+        main_size = dpg.get_item_rect_size(self.module.app.main_window.tag)
+        if main_size == [100, 100]:
+            main_size = [
+                dpg.get_viewport_client_width(),
+                dpg.get_viewport_client_height(),
+            ]
+        position = [
+            main_position[0] + (main_size[0] - self.REPEAT_DIALOG_WIDTH) / 2,
+            main_position[1] + (main_size[1] - self.REPEAT_DIALOG_HEIGHT) / 2,
+        ]
+        dpg.set_item_pos(self.REPEAT_DIALOG, position)
+        dpg.configure_item(self.REPEAT_DIALOG, show=True)
+
+    def hide_repeat_dialog(self) -> None:
+        if dpg.does_item_exist(self.REPEAT_DIALOG):
+            dpg.configure_item(self.REPEAT_DIALOG, show=False)
 
     def update_levels(
         self,
@@ -176,8 +268,22 @@ class SpectrumView:
         duration = self.module.set_setting("duration", value)
         dpg.set_value(sender, duration)
 
+    def _set_multiple(self, sender, value: bool, user_data=None) -> None:
+        multiple = self.module.set_setting("multiple", value)
+        dpg.set_value(sender, multiple)
+        dpg.configure_item(self.MULTIPLE_CONTROLS, show=multiple)
+
+    def _set_count(self, sender, value: int, user_data=None) -> None:
+        count = self.module.set_setting("count", value)
+        dpg.set_value(sender, count)
+
+    def _set_auto(self, sender, value: bool, user_data=None) -> None:
+        dpg.set_value(sender, self.module.set_setting("auto", value))
+
     def _set_reference(self, sender, value: str, user_data=None) -> None:
-        self.module.set_setting("reference", value)
+        reference = self.module.set_setting("reference", value)
+        dpg.set_value(sender, reference)
+        dpg.configure_item(self.WEIGHTING_GROUP, show=reference == "none")
 
     def _set_weighting(self, sender, value: str, user_data=None) -> None:
         self.module.set_setting("weighting", value)

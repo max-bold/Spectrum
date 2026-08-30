@@ -4,6 +4,10 @@ import dearpygui.dearpygui as dpg
 
 from spectrum_app.core.model import PlotType
 from spectrum_app.gui.controls import LevelMeter, add_level_meter
+from spectrum_app.modules.rta.types import (
+    FILTERED_IIR_GENERATOR,
+    RTANoiseGeneratorType,
+)
 
 if TYPE_CHECKING:
     from spectrum_app.modules.rta.module import RTAModule
@@ -16,9 +20,11 @@ class RTAView:
     NOISE = "module::rta::noise"
     BAND = "module::rta::band"
     LEVEL = "module::rta::level"
+    LEVEL_GROUP = "module::rta::level_group"
     WINDOW_WIDTH = "module::rta::window_width"
     WINDOW_HOP = "module::rta::window_hop"
     POINTS = "module::rta::points"
+    POINTS_HANDLERS = "module::rta::points::handlers"
     SMOOTHING_GROUP = "module::rta::smoothing_group"
     SMOOTHING = "module::rta::smoothing"
     GENERATOR_GROUP = "module::rta::generator_group"
@@ -59,17 +65,20 @@ class RTAView:
                         width=-1,
                         callback=self._set_band,
                     )
-                    dpg.add_text("Level, dB")
-                    dpg.add_slider_float(
-                        tag=self.LEVEL,
-                        default_value=state["level_db"],
-                        min_value=-10.0,
-                        max_value=10.0,
-                        clamped=True,
-                        format="%.1f dB",
-                        width=-1,
-                        callback=self._set_level,
-                    )
+                    with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
+                        tag=self.LEVEL_GROUP,
+                    ):
+                        dpg.add_text("Level, dB")
+                        dpg.add_slider_float(
+                            tag=self.LEVEL,
+                            default_value=state["level_db"],
+                            min_value=-10.0,
+                            max_value=10.0,
+                            clamped=True,
+                            format="%.1f dB",
+                            width=-1,
+                            callback=self._set_level,
+                        )
 
             with dpg.collapsing_header(  # pyright: ignore[reportGeneralTypeIssues]
                 label="FFT",
@@ -107,11 +116,14 @@ class RTAView:
                 dpg.add_input_int(
                     tag=self.POINTS,
                     default_value=state["points"],
-                    min_value=2,
+                    min_value=24,
+                    max_value=2048,
                     min_clamped=True,
+                    max_clamped=True,
                     step=0,
                     width=-1,
-                    callback=self._set_points,
+                    callback=self._commit_points,
+                    on_enter=True,
                 )
                 with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
                     tag=self.SMOOTHING_GROUP,
@@ -127,6 +139,14 @@ class RTAView:
                         callback=self._set_smoothing,
                     )
 
+        with dpg.item_handler_registry(  # pyright: ignore[reportGeneralTypeIssues]
+            tag=self.POINTS_HANDLERS,
+        ):
+            dpg.add_item_deactivated_after_edit_handler(
+                callback=self._commit_points,
+            )
+        dpg.bind_item_handler_registry(self.POINTS, self.POINTS_HANDLERS)
+
         with dpg.group(  # pyright: ignore[reportGeneralTypeIssues]
             parent=bottom_parent,
             tag=self.BOTTOM,
@@ -140,10 +160,11 @@ class RTAView:
                 height_offset=-20,
             )
         self.update_smoothing_visibility(int(state["points"]))
+        self.update_generator_visibility(self.module.settings.generator)
         self.update_levels((0.0, 0.0))
 
     def destroy(self) -> None:
-        for item in (self.ROOT, self.BOTTOM):
+        for item in (self.ROOT, self.BOTTOM, self.POINTS_HANDLERS):
             if dpg.does_item_exist(item):
                 dpg.delete_item(item)
         self.level_meter = None
@@ -168,6 +189,16 @@ class RTAView:
                 show=self.module._effective_plot_type(points) == PlotType.LINE,
             )
 
+    def update_generator_visibility(
+        self,
+        generator: RTANoiseGeneratorType,
+    ) -> None:
+        filtered = generator == FILTERED_IIR_GENERATOR
+        if dpg.does_item_exist(self.LEVEL_GROUP):
+            dpg.configure_item(self.LEVEL_GROUP, show=filtered)
+        if not filtered and dpg.does_item_exist(self.LEVEL):
+            dpg.set_value(self.LEVEL, 0.0)
+
     def _set_noise(self, sender, value: bool, user_data=None) -> None:
         dpg.set_value(sender, self.module.set_setting("noise", value))
 
@@ -184,9 +215,9 @@ class RTAView:
     def _set_window_hop(self, sender, value: float, user_data=None) -> None:
         dpg.set_value(sender, self.module.set_setting("window_hop", value))
 
-    def _set_points(self, sender, value: int, user_data=None) -> None:
-        points = self.module.set_setting("points", value)
-        dpg.set_value(sender, points)
+    def _commit_points(self, sender=None, app_data=None, user_data=None) -> None:
+        points = self.module.set_setting("points", dpg.get_value(self.POINTS))
+        dpg.set_value(self.POINTS, points)
         self.update_smoothing_visibility(points)
 
     def _set_smoothing(self, sender, value: float, user_data=None) -> None:

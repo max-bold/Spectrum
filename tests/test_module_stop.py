@@ -8,6 +8,7 @@ from audioanalysis import ASignal, FrequencyBand, SemiAnalogTHDConfig
 from spectrum_app.modules.impedance.jobs import ImpedanceCapture
 from spectrum_app.modules.phase.jobs import PhaseAcquisition
 from spectrum_app.modules.rta.jobs import RTAIOWorker, RTARuntimeConfig
+from spectrum_app.modules.rta.types import PERIODIC_IFFT_GENERATOR
 from spectrum_app.modules.spectrum.jobs import SpectrumAcquisition
 from spectrum_app.modules.thd.jobs import THDAcquisition
 
@@ -160,7 +161,7 @@ class ModuleStopTests(unittest.TestCase):
             post_silence=0.0,
             fade_in=0.0,
             fade_out=0.0,
-            online_interval=None,
+            online_samples=None,
             on_level=lambda *args: None,
             on_snapshot=lambda *args: None,
             on_complete=lambda *args: None,
@@ -214,6 +215,7 @@ class ModuleStopTests(unittest.TestCase):
             RTARuntimeConfig(
                 band=FrequencyBand(20.0, 3_000.0),
                 noise=False,
+                generator=PERIODIC_IFFT_GENERATOR,
                 level_db=0.0,
                 window_seconds=1.0,
                 hop_seconds=0.1,

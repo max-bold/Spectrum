@@ -10,6 +10,7 @@
 - `multitone`
 - `white_noise`
 - `pink_noise`
+- `periodic_pink_noise`
 - `pinking_sos`
 - `normalize_peak`
 - `as_channels`

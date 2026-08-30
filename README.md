@@ -1,8 +1,8 @@
 # BM Spectrum
 
 BM Spectrum is a modular audio measurement application built with Python and
-Dear PyGui. Version 0.3 replaces the original analyzer with an independent
-measurement-module architecture and a reusable `audioanalysis` DSP library.
+Dear PyGui. Version 0.3.1 extends the independent measurement-module
+architecture introduced in v0.3 and the reusable `audioanalysis` DSP library.
 
 ## Measurement modules
 
@@ -64,8 +64,8 @@ Pushing a version tag builds Windows, macOS Intel and macOS Apple Silicon
 archives and publishes them to GitHub Releases:
 
 ```bash
-git tag -a v0.3 -m "BM Spectrum v0.3"
-git push origin v0.3
+git tag -a v0.3.1 -m "BM Spectrum v0.3.1"
+git push origin v0.3.1
 ```
 
 macOS bundles are currently not notarized. They may need to be opened through

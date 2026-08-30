@@ -4,6 +4,11 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import dearpygui.dearpygui as dpg
 
 from spectrum_app.core.settings import AppSettings
+from spectrum_app.modules.rta.types import (
+    PERIODIC_IFFT_GENERATOR,
+    RTA_NOISE_GENERATORS,
+    RTANoiseGeneratorType,
+)
 
 if TYPE_CHECKING:
     from spectrum_app.application import SpectrumApplication
@@ -18,7 +23,8 @@ class RTASettings:
     MODULE_ID = "rta"
     DEFAULT_MODE: RTAMode = "mono"
     DEFAULT_PLOT_TYPE: RTAPlotMode = "auto"
-    DEFAULT_WINDOW_FUNCTION: RTAWindowFunction = "hann"
+    DEFAULT_WINDOW_FUNCTION: RTAWindowFunction = "boxcar"
+    DEFAULT_GENERATOR: RTANoiseGeneratorType = PERIODIC_IFFT_GENERATOR
     DEFAULT_PRE_SILENCE = 0.1
     DEFAULT_FADE_IN = 0.5
     DEFAULT_FADE_OUT = 0.5
@@ -77,6 +83,21 @@ class RTASettings:
         )
 
     @property
+    def generator(self) -> RTANoiseGeneratorType:
+        return cast(
+            RTANoiseGeneratorType,
+            self._choice(
+                "generator",
+                self.DEFAULT_GENERATOR,
+                RTA_NOISE_GENERATORS,
+            ),
+        )
+
+    @generator.setter
+    def generator(self, value: RTANoiseGeneratorType) -> None:
+        self._set_choice("generator", value, RTA_NOISE_GENERATORS)
+
+    @property
     def pre_silence(self) -> float:
         return self._float("pre_silence", self.DEFAULT_PRE_SILENCE)
 
@@ -129,7 +150,7 @@ class RTASettings:
 
 class RTASettingsWindow:
     WIDTH = 480
-    HEIGHT = 390
+    HEIGHT = 430
     TAG = "module::rta::settings"
     MENU_ITEM = "module::rta::settings_menu_item"
 
@@ -139,6 +160,7 @@ class RTASettingsWindow:
         self.mode = f"{self.TAG}::mode"
         self.plot_type = f"{self.TAG}::plot_type"
         self.window_function = f"{self.TAG}::window_function"
+        self.generator = f"{self.TAG}::generator"
         self.pre_silence = f"{self.TAG}::pre_silence"
         self.fade_in = f"{self.TAG}::fade_in"
         self.fade_out = f"{self.TAG}::fade_out"
@@ -173,6 +195,12 @@ class RTASettingsWindow:
                 self.window_function,
                 ["hann", "blackman", "boxcar"],
                 self._set_window_function,
+            )
+            self._add_combo(
+                "Noise generator",
+                self.generator,
+                list(RTA_NOISE_GENERATORS),
+                self._set_generator,
             )
             dpg.add_separator()
             self._add_float(
@@ -249,6 +277,7 @@ class RTASettingsWindow:
             plot_type = "line"
         dpg.set_value(self.plot_type, plot_type)
         dpg.set_value(self.window_function, self.settings.window_function)
+        dpg.set_value(self.generator, self.settings.generator)
         dpg.set_value(self.pre_silence, self.settings.pre_silence)
         dpg.set_value(self.fade_in, self.settings.fade_in)
         dpg.set_value(self.fade_out, self.settings.fade_out)
@@ -277,6 +306,11 @@ class RTASettingsWindow:
     def _set_window_function(self, sender, value: str, user_data=None) -> None:
         if self._change_allowed():
             self.settings.window_function = cast(RTAWindowFunction, value)
+
+    def _set_generator(self, sender, value: str, user_data=None) -> None:
+        if self._change_allowed():
+            self.settings.generator = cast(RTANoiseGeneratorType, value)
+            self._sync_controls()
 
     def _set_pre_silence(self, sender, value: float, user_data=None) -> None:
         if self._change_allowed():
