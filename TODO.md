@@ -36,6 +36,7 @@ v0.3.1
 v0.3.2
 + Improve the invalid sweep-band error message and show the effective frequency range after fade-in/fade-out expansion
 + Display each audio device's default sample rate in Application settings
++ Update README and add a screenshot
 
 v0.4
 - Investigate caching smoothing windows in `log_smooth()` and `grid_smooth()`; see [info/smoothing_window_cache.md](info/smoothing_window_cache.md)
