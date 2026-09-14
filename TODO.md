@@ -39,6 +39,7 @@ v0.3.2
 + Update README and add a screenshot
 + Replace the application icon
 + Replace file open/save dialogs with native system dialogs via tkinter
++ Add a splash screen during application startup
 
 v0.4
 - Investigate caching smoothing windows in `log_smooth()` and `grid_smooth()`; see [info/smoothing_window_cache.md](info/smoothing_window_cache.md)
