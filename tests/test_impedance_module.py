@@ -69,6 +69,77 @@ class DiscardingAudioOutput:
 
 
 class ImpedanceModuleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.view_backend = FakeDpgBackend()
+        patcher = patch("spectrum_app.modules.impedance.view.dpg", self.view_backend)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_spice_fit_completion_cache_and_failure(self) -> None:
+        app = SpectrumApplication()
+        measurement = app.create_measurement("impedance")
+        module = cast(ImpedanceModule, app.module_manager.module("impedance"))
+        module.initialize(app)
+        module._measurement = measurement
+        module._ensure_state(measurement.module_state)
+        view = MagicMock()
+        module._view = view
+        frequency = np.geomspace(20.0, 20_000.0, 128)
+        measurement.module_state.update({
+            "workflow": "calibrated",
+            "frequency": frequency,
+            "impedance": 6.8 + 1j * 2 * np.pi * frequency * 0.0004,
+        })
+        try:
+            # Calibration curves must not be fitted as a measured load.
+            module.request_spice_fit()
+            self.assertIsNone(module._calculation)
+            view.show_spice.assert_called_with("Complete an impedance measurement first", None)
+
+            measurement.module_state["workflow"] = "completed"
+            module.request_spice_fit()
+            self.assertFalse(app.app_state.measuring)
+            view.set_enabled.assert_called_with(False)
+            self.assertIsNotNone(module._calculation)
+            module._calculation.join(timeout=5)
+            module.update()
+            fit = measurement.module_state["fit_result"]
+            self.assertIsNotNone(fit)
+            self.assertEqual(fit.sections, 0)
+            self.assertIn("RMS log error", view.show_spice.call_args.args[0])
+            view.set_enabled.assert_called_with(True)
+            self.assertIsNone(module._operation)
+
+            with patch.object(module, "_start_calculation") as start:
+                module.request_spice_fit()
+                start.assert_not_called()
+                module.settings.spice_accuracy_percent = 1.0
+                module.request_spice_fit()
+                start.assert_called_once()
+                module.settings.spice_accuracy_percent = 2.0
+                start.reset_mock()
+                # A legacy pickled instance lacks the method field in its state.
+                vars(fit).pop("fit_method")
+                module.request_spice_fit()
+                start.assert_called_once()
+
+            measurement.module_state["fit_result"] = None
+            measurement.module_state["spice_values"] = None
+            with patch(
+                "spectrum_app.modules.impedance.module.fit_impedance_auto",
+                side_effect=RuntimeError("did not converge"),
+            ):
+                module.request_spice_fit()
+                module._calculation.join(timeout=5)
+                module.update()
+            self.assertIsNone(measurement.module_state["fit_result"])
+            self.assertIsNone(module._operation)
+            view.set_enabled.assert_called_with(True)
+            view.show_spice.assert_called_with("SPICE Fit failed: did not converge", None)
+        finally:
+            module.deactivate()
+            module.shutdown()
+
     def test_calibration_error_uses_popup_and_short_status(self) -> None:
         app = SpectrumApplication()
         app.main_window.set_status_text = MagicMock()
@@ -129,6 +200,10 @@ class ImpedanceModuleTests(unittest.TestCase):
             patch("spectrum_app.gui.controls.level_meter.dpg", backend),
         ):
             module.initialize(app)
+            self.assertTrue(any(
+                call[0] == "add_menu_item" and call[1].get("tag") == ImpedanceView.SETTINGS_ITEM
+                for call in backend.calls
+            ))
             module.activate(measurement)
             try:
                 self.assertEqual(module.measurement_button_label, "Calibrate")
@@ -341,6 +416,21 @@ class ImpedanceModuleTests(unittest.TestCase):
             )
             self.assertEqual(spice_item[1]["label"], "SPICE Fit")
             self.assertEqual(spice_item[1]["parent"], app.main_window.tools_menu)
+            settings_item = next(
+                call for call in backend.calls
+                if call[0] == "add_menu_item"
+                and call[1].get("tag") == ImpedanceView.SETTINGS_ITEM
+            )
+            self.assertEqual(settings_item[1]["parent"], app.main_window.settings_menu)
+            accuracy_input = next(
+                call[1] for call in backend.calls
+                if call[0] == "add_input_float"
+                and call[1].get("tag") == ImpedanceView.SPICE_ACCURACY
+            )
+            self.assertEqual(accuracy_input["default_value"], 2.0)
+            self.assertTrue(accuracy_input["on_enter"])
+            accuracy_input["callback"](ImpedanceView.SPICE_ACCURACY, 1.0)
+            self.assertEqual(module.settings.spice_accuracy_percent, 1.0)
             test_tone_item = next(
                 call
                 for call in backend.calls
@@ -412,9 +502,13 @@ class ImpedanceModuleTests(unittest.TestCase):
 
             with patch.object(backend, "does_item_exist", return_value=True):
                 module.deactivate()
-            module.shutdown()
+                self.assertNotIn(("delete_item", ImpedanceView.SETTINGS_ITEM), backend.calls)
+                self.assertNotIn(("delete_item", ImpedanceView.SETTINGS_WINDOW), backend.calls)
+                module.shutdown()
 
         self.assertIn(("delete_item", ImpedanceView.TOOLS_ITEM), backend.calls)
+        self.assertIn(("delete_item", ImpedanceView.SETTINGS_ITEM), backend.calls)
+        self.assertIn(("delete_item", ImpedanceView.SETTINGS_WINDOW), backend.calls)
         self.assertIn(("delete_item", ImpedanceView.TEST_TONE_ITEM), backend.calls)
         self.assertIn(("delete_item", ImpedanceView.CALIBRATE_ITEM), backend.calls)
 

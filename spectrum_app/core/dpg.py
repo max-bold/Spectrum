@@ -1,4 +1,5 @@
 from typing import Any
+from pathlib import Path
 
 import dearpygui.dearpygui as dpg
 
@@ -33,7 +34,9 @@ class DearPyGuiRuntime:
         if not self._context_created:
             raise RuntimeError("Dear PyGui context is not created")
 
-        self.backend.create_viewport(title=title, width=width, height=height)
+        icon = Path(__file__).resolve().parents[1] / "gui/assets/app-icon.ico"
+        self.backend.create_viewport(title=title, width=width, height=height,
+                                     small_icon=str(icon), large_icon=str(icon))
         self.backend.setup_dearpygui()
         self.backend.show_viewport()
         self.backend.set_primary_window(primary_window, True)

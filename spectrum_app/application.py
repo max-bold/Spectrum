@@ -21,7 +21,12 @@ class SpectrumApplication:
 
     DEFAULT_MODULE_ID = "spectrum"
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, startup_progress: Callable[[str, float], None] | None = None,
+        startup_ready: Callable[[], None] | None = None,
+    ) -> None:
+        self._startup_progress = startup_progress or (lambda message, progress: None)
+        self._startup_ready = startup_ready
         self._running = False
         self.frame_callbacks: list[Callable[[], None]] = []
         self.app_state = AppState()
@@ -30,6 +35,7 @@ class SpectrumApplication:
         self.audio_input = AudioInput(self._audio_service)
         self.audio_output = AudioOutput(self._audio_service)
         self.module_manager = ModuleManager()
+        self._startup_progress("Discovering measurement modules", 0.3)
         self.module_manager.discover()
         self._initialized_modules: list[BaseModule] = []
         self.dpg = DearPyGuiRuntime()
@@ -62,14 +68,19 @@ class SpectrumApplication:
                 self._running = False
 
     def _initialize(self) -> None:
+        self._startup_progress("Loading settings", 0.4)
         self.settings.load()
+        self._startup_progress("Detecting audio devices", 0.5)
         self._audio_service.start()
+        self._startup_progress("Building interface", 0.65)
         self.dpg.create_context()
         if not self.app_state.measurements:
             self.create_measurement()
         self.main_window.build()
+        self._startup_progress("Initializing measurement modules", 0.8)
         self._initialize_modules()
         self.main_window.measurement_panel.modules_initialized()
+        self._startup_progress("Drawing main window", 0.95)
         self.dpg.show_viewport(
             title=self.main_window.TITLE,
             width=self.main_window.WIDTH,
@@ -83,6 +94,9 @@ class SpectrumApplication:
             self._process_frame_callbacks()
             self.main_window.update()
             self.dpg.render_frame()
+            if self._startup_ready is not None:
+                ready, self._startup_ready = self._startup_ready, None
+                ready()
 
     def _process_frame_callbacks(self) -> None:
         for callback in self.frame_callbacks.copy():

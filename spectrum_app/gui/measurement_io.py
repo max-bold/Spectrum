@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import dearpygui.dearpygui as dpg
 
+from spectrum_app.gui.native_files import NativeFileDialogError, choose_file
+
 from spectrum_app.core.measurement_io import (
     MEASUREMENT_EXTENSION,
     MeasurementIOError,
@@ -46,30 +48,18 @@ class MeasurementDialogs:
             parent=export_menu,
             callback=self.show_export_dialog,
         )
-        dpg.add_file_dialog(
-            tag=self.import_dialog,
-            show=False,
-            modal=True,
-            width=self.WIDTH,
-            height=self.HEIGHT,
-            callback=self.import_measurement,
-        )
-        dpg.add_file_extension(MEASUREMENT_EXTENSION, parent=self.import_dialog)
-        dpg.add_file_dialog(
-            tag=self.export_dialog,
-            show=False,
-            modal=True,
-            width=self.WIDTH,
-            height=self.HEIGHT,
-            default_filename=f"measurement{MEASUREMENT_EXTENSION}",
-            callback=self.export_measurement,
-        )
-        dpg.add_file_extension(MEASUREMENT_EXTENSION, parent=self.export_dialog)
 
     def show_import_dialog(self, sender=None, app_data=None, user_data=None) -> None:
         if not self._can_start("import"):
             return
-        dpg.show_item(self.import_dialog)
+        try:
+            path = choose_file(title="Import measurement", extension=MEASUREMENT_EXTENSION,
+                               description="BM Spectrum measurement")
+        except NativeFileDialogError as error:
+            self.app.main_window.show_error("Import measurement", str(error))
+            return
+        if path is not None:
+            self.import_measurement(self.import_dialog, {"file_path_name": str(path)})
 
     def show_export_dialog(self, sender=None, app_data=None, user_data=None) -> None:
         if not self._can_start("export"):
@@ -78,11 +68,15 @@ class MeasurementDialogs:
         if measurement is None:
             self.app.main_window.set_status_text("No active measurement to export")
             return
-        dpg.configure_item(
-            self.export_dialog,
-            default_filename=self._filename(measurement.name),
-        )
-        dpg.show_item(self.export_dialog)
+        try:
+            path = choose_file(title="Export measurement", extension=MEASUREMENT_EXTENSION,
+                               description="BM Spectrum measurement", save=True,
+                               initial=Path.cwd() / self._filename(measurement.name))
+        except NativeFileDialogError as error:
+            self.app.main_window.show_error("Export measurement", str(error))
+            return
+        if path is not None:
+            self.export_measurement(self.export_dialog, {"file_path_name": str(path)})
 
     def import_measurement(
         self,
