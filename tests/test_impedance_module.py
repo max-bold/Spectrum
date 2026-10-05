@@ -69,6 +69,12 @@ class DiscardingAudioOutput:
 
 
 class ImpedanceModuleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.view_backend = FakeDpgBackend()
+        patcher = patch("spectrum_app.modules.impedance.view.dpg", self.view_backend)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_spice_fit_completion_cache_and_failure(self) -> None:
         app = SpectrumApplication()
         measurement = app.create_measurement("impedance")
@@ -194,6 +200,10 @@ class ImpedanceModuleTests(unittest.TestCase):
             patch("spectrum_app.gui.controls.level_meter.dpg", backend),
         ):
             module.initialize(app)
+            self.assertTrue(any(
+                call[0] == "add_menu_item" and call[1].get("tag") == ImpedanceView.SETTINGS_ITEM
+                for call in backend.calls
+            ))
             module.activate(measurement)
             try:
                 self.assertEqual(module.measurement_button_label, "Calibrate")
@@ -492,7 +502,9 @@ class ImpedanceModuleTests(unittest.TestCase):
 
             with patch.object(backend, "does_item_exist", return_value=True):
                 module.deactivate()
-            module.shutdown()
+                self.assertNotIn(("delete_item", ImpedanceView.SETTINGS_ITEM), backend.calls)
+                self.assertNotIn(("delete_item", ImpedanceView.SETTINGS_WINDOW), backend.calls)
+                module.shutdown()
 
         self.assertIn(("delete_item", ImpedanceView.TOOLS_ITEM), backend.calls)
         self.assertIn(("delete_item", ImpedanceView.SETTINGS_ITEM), backend.calls)

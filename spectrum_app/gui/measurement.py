@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import dearpygui.dearpygui as dpg
 
@@ -264,13 +264,26 @@ class MeasurementPanel:
 
     @staticmethod
     def _has_measurement_data(measurement: Measurement) -> bool:
-        if measurement.graphs:
+        if any(graph.x.size and graph.y.size for graph in measurement.graphs):
             return True
         data_markers = ("recording", "generator", "result", "calibration")
         return any(
-            value is not None and any(marker in key for marker in data_markers)
+            MeasurementPanel._has_data_value(value)
+            and any(marker in key for marker in data_markers)
             for key, value in measurement.module_state.items()
         )
+
+    @staticmethod
+    def _has_data_value(value: Any) -> bool:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return False
+        if hasattr(value, "size"):
+            return value.size > 0
+        if hasattr(value, "sample_count"):
+            return value.sample_count > 0
+        if isinstance(value, (list, tuple, dict)):
+            return len(value) > 0
+        return True
 
     def _center_module_change_dialog(self) -> None:
         main_position = dpg.get_item_pos(self.app.main_window.tag)

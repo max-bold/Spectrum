@@ -308,6 +308,10 @@ class FakeDpgBackend:
         self.calls.append(("draw_text", position, text, kwargs))
         return f"draw_text::{len(self.calls)}"
 
+    def draw_image(self, texture, pmin, pmax, **kwargs) -> str:
+        self.calls.append(("draw_image", texture, pmin, pmax, kwargs))
+        return f"draw_image::{len(self.calls)}"
+
     def draw_line(self, point1, point2, **kwargs) -> str:
         self.calls.append(("draw_line", point1, point2, kwargs))
         return f"line::{len(self.calls)}"
@@ -436,6 +440,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             patch("spectrum_app.modules.thd.view.dpg", backend),
             patch("spectrum_app.gui.controls.level_meter.dpg", backend),
             patch("spectrum_app.modules.thd.settings.dpg", backend),
+            patch("spectrum_app.modules.impedance.view.dpg", backend),
         ):
             app.run()
 
@@ -584,20 +589,20 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
         watermark = next(
             call
             for call in backend.calls
-            if call[0] == "draw_text"
-            and call[3].get("tag") == app.main_window.plot.watermark
+            if call[0] == "draw_image"
+            and call[4].get("tag") == app.main_window.plot.watermark
         )
-        self.assertEqual(watermark[2], "BM Spectrum")
+        self.assertEqual(watermark[1], app.main_window.plot.watermark_texture)
         self.assertEqual(
-            watermark[3]["parent"],
+            watermark[4]["parent"],
             app.main_window.plot.watermark_layer,
         )
-        self.assertLess(watermark[3]["color"][3], 255)
+        self.assertLess(watermark[4]["color"][3], 255)
         self.assertIn(
             (
                 "configure_item",
                 app.main_window.plot.watermark,
-                {"pos": (696.0, 60.0), "show": True},
+                {"pmin": (706.0, 54.0), "pmax": (802.0, 78.0), "show": True},
             ),
             backend.calls,
         )
@@ -612,7 +617,7 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
             (
                 "configure_item",
                 app.main_window.plot.watermark,
-                {"pos": (644.0, 60.0), "show": True},
+                {"pmin": (654.0, 54.0), "pmax": (750.0, 78.0), "show": True},
             ),
             backend.calls,
         )
@@ -1150,14 +1155,15 @@ class DearPyGuiLifecycleTests(unittest.TestCase):
                 if call[0] == "add_combo"
                 and call[2].get("tag") == window.settings_window.output_device
             )
+            self.assertIn("48 kHz", window.settings_window._device_label(input_device))
             input_combo[2]["callback"](
                 input_combo[2]["tag"],
-                input_device.label,
+                window.settings_window._device_label(input_device),
                 None,
             )
             output_combo[2]["callback"](
                 output_combo[2]["tag"],
-                output_device.label,
+                window.settings_window._device_label(output_device),
                 None,
             )
 

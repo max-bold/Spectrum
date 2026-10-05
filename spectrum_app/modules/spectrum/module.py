@@ -717,12 +717,26 @@ class SpectrumModule(BaseModule):
         band = FrequencyBand(*state["band"])
         band.validate(nyquist=min(input_rate, output_rate) / 2)
         if self.settings.generator_mode == "log chirp":
-            extend_log_sweep_band(
+            sweep_band = extend_log_sweep_band(
                 band,
                 float(state["duration"]),
                 self.settings.fade_in,
                 self.settings.fade_out,
-            ).validate(nyquist=output_rate / 2)
+            )
+            try:
+                sweep_band.validate(nyquist=output_rate / 2)
+            except ValueError as error:
+                raise ValueError(
+                    "Sweep frequency range exceeds the output limit.\n\n"
+                    f"Requested range: {band.low:.1f} - {band.high:.1f} Hz\n"
+                    f"Range with fade-in/out: {sweep_band.low:.1f} - {sweep_band.high:.1f} Hz\n"
+                    f"Output Nyquist limit: {output_rate / 2:.1f} Hz\n"
+                    f"Output sample rate: {output_rate:.1f} Hz\n\n"
+                    "To correct this:\n"
+                    "- Reduce the upper frequency or fade duration.\n"
+                    "- Increase the measurement duration.\n"
+                    "- Select a higher output sample rate."
+                ) from error
 
     def _total_duration(self, state: dict[str, Any]) -> float:
         return (

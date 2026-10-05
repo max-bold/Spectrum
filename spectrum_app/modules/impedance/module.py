@@ -134,6 +134,7 @@ class ImpedanceModule(BaseModule):
         super().initialize(app)
         self._settings = ImpedanceSettings(app.settings)
         self._view = ImpedanceView(self)
+        self._view.build_settings()
 
     @property
     def settings(self) -> ImpedanceSettings:
@@ -233,6 +234,8 @@ class ImpedanceModule(BaseModule):
         if capture is not None and capture.is_alive():
             capture.request_stop()
             capture.join()
+        if self._view is not None:
+            self._view.destroy_settings()
         self._view = None
         self._settings = None
         self.app.app_state.measuring = False

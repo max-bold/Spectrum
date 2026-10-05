@@ -34,19 +34,19 @@ v0.3.1
 + Optimize Spectrum online Welch with incremental overlapping-window accumulation - done
 
 v0.3.2
-+ Improve the invalid sweep-band error message and show the effective frequency range after fade-in/fade-out expansion
-+ Display each audio device's default sample rate in Application settings
-+ Update README and add a screenshot
-+ Replace the application icon
-+ Replace file open/save dialogs with native system dialogs via tkinter
-+ Add a splash screen during application startup
++ Improve the invalid sweep-band error message and show the effective frequency range after fade-in/fade-out expansion - done
++ Display each audio device's default sample rate in Application settings - done
++ Update README and add a screenshot - done
++ Replace the application icon - done (initial editable design)
++ Replace file open/save dialogs with native system dialogs via tkinter - done
++ Add a splash screen during application startup - done (Windows source and packaged startup verified)
++ Avoid the data-loss warning when switching modules before any measurement - done
++ Replace the plot text watermark with the wordmark from SpectrumAndroid/logo - done
 
 v0.4
+- Verify SPICE model fitting against real impedance measurements (deferred from v0.3.2; requires measurement equipment)
 - Investigate caching smoothing windows in `log_smooth()` and `grid_smooth()`; see [info/smoothing_window_cache.md](info/smoothing_window_cache.md)
 - Improve the delay-fitting algorithm for phase measurements
-
-v0.5
-- Verify SPICE model fitting against real impedance measurements
 
 v0.9
 - Implement a Module Manager for manual loading/unloading external modules

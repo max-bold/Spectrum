@@ -1,6 +1,5 @@
-from .application import SpectrumApplication
+from spectrum_app.entrypoint import main
 
 
 if __name__ == "__main__":
-    app = SpectrumApplication()
-    app.run()
+    raise SystemExit(main())

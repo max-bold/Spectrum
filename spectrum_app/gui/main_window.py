@@ -9,13 +9,14 @@ from spectrum_app.gui.measurement_io import MeasurementDialogs
 from spectrum_app.gui.plot import Plot
 from spectrum_app.gui.project import ProjectDialogs
 from spectrum_app.gui.settings import SettingsWindow
+from spectrum_app.version import APP_NAME, APP_VERSION
 
 if TYPE_CHECKING:
     from spectrum_app.application import SpectrumApplication
 
 
 class MainWindow:
-    TITLE = "BM Spectrum"
+    TITLE = f"{APP_NAME} {APP_VERSION}"
     TAG = "app::main_window"
     WIDTH = 1024
     HEIGHT = 768

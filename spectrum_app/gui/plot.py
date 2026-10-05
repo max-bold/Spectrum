@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import dearpygui.dearpygui as dpg
+
+from spectrum_app.gui.native_files import NativeFileDialogError, choose_file
 import numpy as np
 
 from audioanalysis import break_phase_wraps, phase_derivative, wrap_phase
@@ -21,12 +23,12 @@ if TYPE_CHECKING:
 
 class Plot:
     EXPORT_WAIT_FRAMES = 2
-    WATERMARK_TEXT = "BM Spectrum"
-    WATERMARK_RIGHT_MARGIN = 36
+    WATERMARK_RIGHT_MARGIN = 18
     WATERMARK_RIGHT_AXIS_MARGIN = 52
-    WATERMARK_TOP_MARGIN = 20
-    WATERMARK_COLOR = (180, 180, 180, 110)
-    WATERMARK_SIZE = 15
+    WATERMARK_TOP_MARGIN = 14
+    WATERMARK_COLOR = (255, 255, 255, 110)
+    WATERMARK_WIDTH = 96
+    WATERMARK_HEIGHT = 24
     WATERMARK_BLOCKING_ITEM_TYPES = {
         "mvAppItemType::mvWindowAppItem",
         "mvAppItemType::mvFileDialog",
@@ -45,6 +47,7 @@ class Plot:
         self.legend = "app::plot::legend"
         self.watermark_layer = "app::plot::watermark_layer"
         self.watermark = "app::plot::watermark"
+        self.watermark_texture = "app::plot::watermark_texture"
         self.y_axes = [
             "app::plot::y_axis_1",
             "app::plot::y_axis_2",
@@ -102,13 +105,15 @@ class Plot:
                     show=False,
                 )
         dpg.add_viewport_drawlist(tag=self.watermark_layer, front=True)
-        dpg.draw_text(
-            (0, 0),
-            self.WATERMARK_TEXT,
+        logo = Path(__file__).parent / "assets" / "plot-logo.png"
+        width, height, _, pixels = dpg.load_image(str(logo))
+        with dpg.texture_registry(show=False):
+            dpg.add_static_texture(width, height, pixels, tag=self.watermark_texture)
+        dpg.draw_image(
+            self.watermark_texture, (0, 0), (self.WATERMARK_WIDTH, self.WATERMARK_HEIGHT),
             tag=self.watermark,
             parent=self.watermark_layer,
             color=self.WATERMARK_COLOR,
-            size=self.WATERMARK_SIZE,
             show=False,
         )
         self._built = True
@@ -119,19 +124,16 @@ class Plot:
             parent=export_menu,
             callback=self.show_export_dialog,
         )
-        dpg.add_file_dialog(
-            tag=self.export_dialog,
-            show=False,
-            modal=True,
-            width=700,
-            height=400,
-            default_filename="plot.png",
-            callback=self.export_png,
-        )
-        dpg.add_file_extension(".png", parent=self.export_dialog)
-
     def show_export_dialog(self, sender=None, app_data=None, user_data=None) -> None:
-        dpg.show_item(self.export_dialog)
+        try:
+            path = choose_file(title="Export plot", extension=".png",
+                               description="PNG image", save=True,
+                               initial=Path.cwd() / "plot.png")
+        except NativeFileDialogError as error:
+            self.app.main_window.show_error("Export plot", str(error))
+            return
+        if path is not None:
+            self.export_png(self.export_dialog, {"file_path_name": str(path)})
 
     def export_png(
         self,
@@ -205,7 +207,6 @@ class Plot:
             dpg.configure_item(self.watermark, show=False)
             return
 
-        text_width, _ = dpg.get_text_size(self.WATERMARK_TEXT)
         visible_axis_count = len(
             {axis_spec for _, axis_spec, _ in self._topology}
         )
@@ -216,10 +217,10 @@ class Plot:
         )
         dpg.configure_item(
             self.watermark,
-            pos=(
-                float(rect_max[0] - text_width - right_margin),
-                float(rect_min[1] + self.WATERMARK_TOP_MARGIN),
-            ),
+            pmin=(float(rect_max[0] - self.WATERMARK_WIDTH - right_margin),
+                  float(rect_min[1] + self.WATERMARK_TOP_MARGIN)),
+            pmax=(float(rect_max[0] - right_margin),
+                  float(rect_min[1] + self.WATERMARK_TOP_MARGIN + self.WATERMARK_HEIGHT)),
             show=True,
         )
 

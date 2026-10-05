@@ -161,33 +161,6 @@ class ImpedanceView:
         ):
             dpg.add_text("No model calculated", tag=self.SPICE_TEXT)
 
-        dpg.add_menu_item(
-            label="Impedance", tag=self.SETTINGS_ITEM,
-            parent=self.module.app.main_window.settings_menu,
-            callback=self.show_settings,
-        )
-        with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
-            label="Impedance settings", tag=self.SETTINGS_WINDOW,
-            width=460, height=230, show=False, modal=True,
-            no_resize=True, no_collapse=True, on_close=self.hide_settings,
-        ):
-            dpg.add_text("SPICE Fit: target RMS log error, %")
-            dpg.add_input_float(
-                tag=self.SPICE_ACCURACY,
-                default_value=self.module.settings.spice_accuracy_percent,
-                min_value=0.1, max_value=20.0, min_clamped=True, max_clamped=True,
-                step=0, width=-1, on_enter=True, callback=self._set_spice_accuracy,
-            )
-            dpg.add_text(
-                "Lower values require a closer fit and may add more sections.\n"
-                "Default: 2%. Maximum: 10 sections.", wrap=420,
-            )
-        with dpg.item_handler_registry(  # pyright: ignore[reportGeneralTypeIssues]
-            tag=self.SPICE_ACCURACY_HANDLERS,
-        ):
-            dpg.add_item_deactivated_after_edit_handler(callback=self._commit_spice_accuracy)
-        dpg.bind_item_handler_registry(self.SPICE_ACCURACY, self.SPICE_ACCURACY_HANDLERS)
-
         with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
             label="Impedance calibration",
             tag=self.CALIBRATION_DIALOG,
@@ -234,6 +207,39 @@ class ImpedanceView:
                 callback=self.module.cancel_calibration,
             )
 
+    def build_settings(self) -> None:
+        dpg.add_menu_item(
+            label="Impedance", tag=self.SETTINGS_ITEM,
+            parent=self.module.app.main_window.settings_menu,
+            callback=self.show_settings,
+        )
+        with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
+            label="Impedance settings", tag=self.SETTINGS_WINDOW,
+            width=460, height=230, show=False, modal=True,
+            no_resize=True, no_collapse=True, on_close=self.hide_settings,
+        ):
+            dpg.add_text("SPICE Fit: target RMS log error, %")
+            dpg.add_input_float(
+                tag=self.SPICE_ACCURACY,
+                default_value=self.module.settings.spice_accuracy_percent,
+                min_value=0.1, max_value=20.0, min_clamped=True, max_clamped=True,
+                step=0, width=-1, on_enter=True, callback=self._set_spice_accuracy,
+            )
+            dpg.add_text(
+                "Lower values require a closer fit and may add more sections.\n"
+                "Default: 2%. Maximum: 10 sections.", wrap=420,
+            )
+        with dpg.item_handler_registry(  # pyright: ignore[reportGeneralTypeIssues]
+            tag=self.SPICE_ACCURACY_HANDLERS,
+        ):
+            dpg.add_item_deactivated_after_edit_handler(callback=self._commit_spice_accuracy)
+        dpg.bind_item_handler_registry(self.SPICE_ACCURACY, self.SPICE_ACCURACY_HANDLERS)
+
+    def destroy_settings(self) -> None:
+        for item in (self.SETTINGS_ITEM, self.SETTINGS_WINDOW, self.SPICE_ACCURACY_HANDLERS):
+            if dpg.does_item_exist(item):
+                dpg.delete_item(item)
+
     def destroy(self) -> None:
         for item in (
             self.ROOT,
@@ -245,9 +251,6 @@ class ImpedanceView:
             self.TOOLS_ITEM,
             self.WINDOW_WIDTH_HANDLERS,
             self.POINTS_HANDLERS,
-            self.SETTINGS_ITEM,
-            self.SETTINGS_WINDOW,
-            self.SPICE_ACCURACY_HANDLERS,
         ):
             if dpg.does_item_exist(item):
                 dpg.delete_item(item)

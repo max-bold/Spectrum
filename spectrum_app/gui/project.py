@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, Any
 
 import dearpygui.dearpygui as dpg
 
+from spectrum_app.gui.native_files import NativeFileDialogError, choose_file
+
 from spectrum_app.core.project import PROJECT_EXTENSION, ProjectError
 
 if TYPE_CHECKING:
@@ -35,38 +37,27 @@ class ProjectDialogs:
             callback=self.show_save_dialog,
         )
 
-        dpg.add_file_dialog(
-            tag=self.open_dialog,
-            show=False,
-            modal=True,
-            width=self.WIDTH,
-            height=self.HEIGHT,
-            callback=self.open,
-        )
-        dpg.add_file_extension(PROJECT_EXTENSION, parent=self.open_dialog)
-        dpg.add_file_dialog(
-            tag=self.save_dialog,
-            show=False,
-            modal=True,
-            width=self.WIDTH,
-            height=self.HEIGHT,
-            default_filename=f"project{PROJECT_EXTENSION}",
-            callback=self.save_as,
-        )
-        dpg.add_file_extension(PROJECT_EXTENSION, parent=self.save_dialog)
-
     def show_open_dialog(self, sender=None, app_data=None, user_data=None) -> None:
-        dpg.show_item(self.open_dialog)
+        try:
+            path = choose_file(title="Open project", extension=PROJECT_EXTENSION,
+                               description="BM Spectrum project",
+                               initial=self.app.app_state.project_path)
+        except NativeFileDialogError as error:
+            self.app.main_window.show_error("Open project", str(error))
+            return
+        if path is not None:
+            self.open(self.open_dialog, {"file_path_name": str(path)})
 
     def show_save_dialog(self, sender=None, app_data=None, user_data=None) -> None:
-        project_path = self.app.app_state.project_path
-        if project_path is not None:
-            dpg.configure_item(
-                self.save_dialog,
-                default_path=str(project_path.parent),
-                default_filename=project_path.name,
-            )
-        dpg.show_item(self.save_dialog)
+        try:
+            path = choose_file(title="Save project", extension=PROJECT_EXTENSION,
+                               description="BM Spectrum project", save=True,
+                               initial=self.app.app_state.project_path or Path.cwd() / "project.bms")
+        except NativeFileDialogError as error:
+            self.app.main_window.show_error("Save project", str(error))
+            return
+        if path is not None:
+            self._save_to(path)
 
     def save(self, sender=None, app_data=None, user_data=None) -> None:
         if self.app.app_state.project_path is None:
