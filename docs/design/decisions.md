@@ -76,8 +76,23 @@
   correction and recalculate Stage 2 and the result from stored recordings.
   Changing the point count only interpolates Stage 1 onto the new frequency
   grid; it never reanalyzes the Stage 1 recording.
-- Impedance exposes its experimental SPICE fit only while the module is active.
-  The fit runs outside the UI thread and is explicitly marked as needing tests.
+- Impedance exposes SPICE fit for completed measurements while the module is
+  active. The fit runs outside the UI thread, with measurement controls disabled.
+  The fit starts with series RL and adds parallel RLC sections one at a time,
+  first at under-fitted measured peaks and then at positive local residual
+  maxima, up to ten. It stops when the target RMS log error is reached; BIC
+  section-count selection and arbitrary filler frequencies are not used.
+  The first stage fits series Re/Le and section resistances with section L fixed
+  at 1 mH. If RMS log error exceeds the target,
+  a second stage also fits section L in 1 uH..1 H, recomputing C to preserve
+  resonance frequencies. It is retained if it reaches the target or RMS log
+  error improves by more than 1%. Both stages evaluate the whole complex circuit before taking its
+  magnitude. Phase is not fitted. Non-converged fits are reported as failures;
+  the result window shows the stage, target, log-error metrics and stop reason.
+  If a further candidate fails, the best converged result is retained and the
+  failure is reported. Settings -> Impedance persists the target RMS log error
+  as a percentage (default 2%, allowed 0.1..20%). Legacy stored fits and fits
+  calculated for a different target are recalculated on request.
 - THD+N uses a fixed-level `0.9` logarithmic sweep and records logical input A.
   Input and output blocking calls run on separate threads; adaptive
   mask calibration and STFT analysis run on a third analyzer thread. Only the

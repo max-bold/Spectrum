@@ -28,6 +28,10 @@ class ImpedanceView:
     TOOLS_ITEM = "module::impedance::spice_fit_tool"
     SPICE_WINDOW = "module::impedance::spice_fit"
     SPICE_TEXT = "module::impedance::spice_fit::text"
+    SETTINGS_ITEM = "module::impedance::settings_menu_item"
+    SETTINGS_WINDOW = "module::impedance::settings"
+    SPICE_ACCURACY = "module::impedance::settings::spice_accuracy"
+    SPICE_ACCURACY_HANDLERS = "module::impedance::settings::spice_accuracy::handlers"
     CALIBRATION_WIDTH = 560
     CALIBRATION_HEIGHT = 340
 
@@ -147,7 +151,7 @@ class ImpedanceView:
             callback=self.module.request_spice_fit,
         )
         with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
-            label="SPICE Fit — needs testing",
+            label="SPICE Fit",
             tag=self.SPICE_WINDOW,
             width=520,
             height=420,
@@ -156,6 +160,33 @@ class ImpedanceView:
             on_close=self.hide_spice,
         ):
             dpg.add_text("No model calculated", tag=self.SPICE_TEXT)
+
+        dpg.add_menu_item(
+            label="Impedance", tag=self.SETTINGS_ITEM,
+            parent=self.module.app.main_window.settings_menu,
+            callback=self.show_settings,
+        )
+        with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
+            label="Impedance settings", tag=self.SETTINGS_WINDOW,
+            width=460, height=230, show=False, modal=True,
+            no_resize=True, no_collapse=True, on_close=self.hide_settings,
+        ):
+            dpg.add_text("SPICE Fit: target RMS log error, %")
+            dpg.add_input_float(
+                tag=self.SPICE_ACCURACY,
+                default_value=self.module.settings.spice_accuracy_percent,
+                min_value=0.1, max_value=20.0, min_clamped=True, max_clamped=True,
+                step=0, width=-1, on_enter=True, callback=self._set_spice_accuracy,
+            )
+            dpg.add_text(
+                "Lower values require a closer fit and may add more sections.\n"
+                "Default: 2%. Maximum: 10 sections.", wrap=420,
+            )
+        with dpg.item_handler_registry(  # pyright: ignore[reportGeneralTypeIssues]
+            tag=self.SPICE_ACCURACY_HANDLERS,
+        ):
+            dpg.add_item_deactivated_after_edit_handler(callback=self._commit_spice_accuracy)
+        dpg.bind_item_handler_registry(self.SPICE_ACCURACY, self.SPICE_ACCURACY_HANDLERS)
 
         with dpg.window(  # pyright: ignore[reportGeneralTypeIssues]
             label="Impedance calibration",
@@ -214,6 +245,9 @@ class ImpedanceView:
             self.TOOLS_ITEM,
             self.WINDOW_WIDTH_HANDLERS,
             self.POINTS_HANDLERS,
+            self.SETTINGS_ITEM,
+            self.SETTINGS_WINDOW,
+            self.SPICE_ACCURACY_HANDLERS,
         ):
             if dpg.does_item_exist(item):
                 dpg.delete_item(item)
@@ -280,7 +314,7 @@ class ImpedanceView:
         if values is None:
             text = status
         else:
-            lines = [f"R1 = {values.r1} Ohm", f"L1 = {values.l1} mH"]
+            lines = [status, "", f"R1 = {values.r1} Ohm", f"L1 = {values.l1} mH"]
             for index, (inductance, capacitance, resistance) in enumerate(
                 values.sections,
                 start=1,
@@ -295,6 +329,29 @@ class ImpedanceView:
 
     def hide_spice(self, sender=None, app_data=None, user_data=None) -> None:
         dpg.configure_item(self.SPICE_WINDOW, show=False)
+
+    def show_settings(self, sender=None, app_data=None, user_data=None) -> None:
+        dpg.set_value(self.SPICE_ACCURACY, self.module.settings.spice_accuracy_percent)
+        position = dpg.get_item_pos(self.module.app.main_window.tag)
+        size = dpg.get_item_rect_size(self.module.app.main_window.tag)
+        if size == [100, 100]:
+            size = [dpg.get_viewport_client_width(), dpg.get_viewport_client_height()]
+        dpg.set_item_pos(self.SETTINGS_WINDOW, [
+            position[0] + (size[0] - 460) / 2,
+            position[1] + (size[1] - 230) / 2,
+        ])
+        dpg.configure_item(self.SETTINGS_WINDOW, show=True)
+
+    def hide_settings(self, sender=None, app_data=None, user_data=None) -> None:
+        self._commit_spice_accuracy()
+        dpg.configure_item(self.SETTINGS_WINDOW, show=False)
+
+    def _set_spice_accuracy(self, sender, value, user_data=None) -> None:
+        self.module.settings.spice_accuracy_percent = value
+        dpg.set_value(sender, self.module.settings.spice_accuracy_percent)
+
+    def _commit_spice_accuracy(self, sender=None, app_data=None, user_data=None) -> None:
+        self._set_spice_accuracy(self.SPICE_ACCURACY, dpg.get_value(self.SPICE_ACCURACY))
 
     def _set_band(self, sender: int | str, value: list[int], user_data=None) -> None:
         band = self.module.set_setting("band", (value[0], value[1]))
