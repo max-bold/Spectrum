@@ -35,6 +35,7 @@ from audioanalysis.impedance_model import FitResult
 from spectrum_app.core.model import AxisSpec, GraphData, Measurement
 from spectrum_app.modules.base import BaseModule
 from spectrum_app.modules.impedance.jobs import ImpedanceCapture
+from spectrum_app.modules.impedance.settings import ImpedanceSettings
 from spectrum_app.modules.impedance.view import ImpedanceView
 
 if TYPE_CHECKING:
@@ -108,6 +109,7 @@ class ImpedanceModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._view: ImpedanceView | None = None
+        self._settings: ImpedanceSettings | None = None
         self._capture: ImpedanceCapture | None = None
         self._calculation: Thread | None = None
         self._lock = Lock()
@@ -130,7 +132,15 @@ class ImpedanceModule(BaseModule):
 
     def initialize(self, app: "SpectrumApplication") -> None:
         super().initialize(app)
+        self._settings = ImpedanceSettings(app.settings)
         self._view = ImpedanceView(self)
+        self._view.build_settings()
+
+    @property
+    def settings(self) -> ImpedanceSettings:
+        if self._settings is None:
+            raise RuntimeError("Impedance settings are not initialized")
+        return self._settings
 
     def activate(self, measurement: Measurement) -> None:
         super().activate(measurement)
@@ -224,7 +234,10 @@ class ImpedanceModule(BaseModule):
         if capture is not None and capture.is_alive():
             capture.request_stop()
             capture.join()
+        if self._view is not None:
+            self._view.destroy_settings()
         self._view = None
+        self._settings = None
         self.app.app_state.measuring = False
         super().shutdown()
 
@@ -302,30 +315,53 @@ class ImpedanceModule(BaseModule):
         if self._view is None:
             return
         result = self._stored_result()
-        if result is None:
+        if result is None or self.measurement.module_state["workflow"] != "completed":
             self._view.show_spice("Complete an impedance measurement first", None)
             return
         if self._is_busy():
             self._view.show_spice("Another operation is active", None)
             return
         stored_values = self.measurement.module_state.get("spice_values")
-        if isinstance(stored_values, SpiceTableValues):
-            self._view.show_spice("Stored SPICE Fit — needs testing", stored_values)
+        stored_fit = self.measurement.module_state.get("fit_result")
+        target_log_error = self.settings.spice_accuracy_percent / 100.0
+        if (
+            isinstance(stored_values, SpiceTableValues)
+            and isinstance(stored_fit, FitResult)
+            and vars(stored_fit).get("fit_method") == "progressive_peak_anchored"
+            and stored_fit.target_log_error == target_log_error
+        ):
+            self._view.show_spice(self._spice_status(stored_fit), stored_values)
             return
-        self._view.show_spice("Calculating SPICE model... (needs testing)", None)
+        self._view.show_spice("Calculating SPICE model...", None)
 
         def calculate() -> tuple[FitResult, SpiceTableValues]:
-            # needs testing: this fit is slow and may produce implausible models.
             fit, _ = fit_impedance_auto(
                 result.frequency,
                 result.magnitude,
                 min_sections=0,
                 max_sections=10,
                 max_evaluations=2000,
+                target_log_error=target_log_error,
             )
             return fit, format_spice_table(fit)
 
         self._start_calculation(Operation.SPICE, calculate, lock_application=False)
+
+    @staticmethod
+    def _spice_status(fit: FitResult) -> str:
+        stage = "widths refined" if fit.inductances_refined else "section L = 1 mH"
+        reason = {
+            "target_reached": "Target accuracy reached",
+            "section_limit": "Section limit reached; target accuracy not reached",
+            "no_resonance": "No further resonance found; target accuracy not reached",
+            "optimization_failed": "Further optimization failed; target accuracy not reached",
+        }.get(fit.stop_reason, "")
+        return (
+            f"SPICE Fit: {fit.sections} sections, {stage}\n"
+            f"Target RMS log error: {fit.target_log_error * 100:.3g}%\n"
+            f"RMS log error: {fit.rms_log_error * 100:.3g}%; "
+            f"max log error: {fit.max_abs_log_error * 100:.3g}%\n{reason}"
+        )
 
     def set_setting(self, key: str, value: Any) -> Any:
         state = self.measurement.module_state
@@ -480,7 +516,7 @@ class ImpedanceModule(BaseModule):
         self._operation = operation
         if lock_application:
             self.app.app_state.measuring = True
-            self._set_controls_enabled(False)
+        self._set_controls_enabled(False)
 
         def worker() -> None:
             try:
@@ -514,6 +550,7 @@ class ImpedanceModule(BaseModule):
         if error is not None or result is None:
             if operation == Operation.SPICE:
                 self._operation = None
+                self._set_controls_enabled(True)
                 if self._view is not None:
                     self._view.show_spice(f"SPICE Fit failed: {error}", None)
                 return
@@ -594,8 +631,9 @@ class ImpedanceModule(BaseModule):
             state["fit_result"] = fit
             state["spice_values"] = values
             self._operation = None
+            self._set_controls_enabled(True)
             if self._view is not None:
-                self._view.show_spice("SPICE Fit completed", values)
+                self._view.show_spice(self._spice_status(fit), values)
 
     def _request_reprocess(self) -> None:
         if self._is_busy():

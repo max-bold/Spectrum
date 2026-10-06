@@ -1,7 +1,7 @@
 # BM Spectrum
 
 BM Spectrum is a modular audio measurement application built with Python and
-Dear PyGui. Version 0.3 replaces the original analyzer with an independent
+Dear PyGui. Version 0.3.2 uses an independent
 measurement-module architecture and a reusable `audioanalysis` DSP library.
 
 ## Measurement modules
@@ -17,9 +17,33 @@ results on the same plot. Projects use the `.bms` format; individual
 measurements can be transferred between projects as `.bmm` files. The plot can
 also be exported directly to PNG.
 
+![BM Spectrum 0.3.2 with synthetic demonstration data](docs/assets/spectrum-v0.3.2.png)
+
+The screenshot uses synthetic data to demonstrate the interface.
+
+## What's new in 0.3.2
+
+- SPICE impedance fitting adds resonant sections progressively, up to ten,
+  and stops at the requested RMS log error. Set the target in **Settings ->
+  Impedance** (default 2%). Resonance frequencies stay fixed while section
+  widths are refined when necessary.
+- Switching an empty measurement between modules no longer asks to discard
+  data. Measurements containing recordings, calibration data or graphs still
+  require confirmation.
+- Sweep-band errors explain the frequency extension introduced by fades and
+  the output Nyquist limit. Application device lists show default sample rates.
+- Project, measurement and plot file operations use native system dialogs.
+- A splash shows the application version and loading stages, closing after
+  the first main-window frame. Windows executable builds show it during
+  bootloader extraction as well; source runs and macOS use a lightweight Tk
+  helper. A new spectrum icon and plot wordmark are included.
+
+See [changelog.md](changelog.md) for the dated change history.
+
 ## Requirements
 
 - Python 3.12 or newer;
+- Tcl/Tk (`tkinter`), normally included with Python on Windows and macOS;
 - an audio input/output device supported by PortAudio;
 - Windows is the primary tested platform. macOS builds are produced by CI but
   still require broader hardware testing.
@@ -60,12 +84,15 @@ before adding a module.
 
 ## Release builds
 
+See [the release process](docs/design/release-process.md) for branch preparation,
+cleanup, transfer to `main`, tagging and publication checks.
+
 Pushing a version tag builds Windows, macOS Intel and macOS Apple Silicon
 archives and publishes them to GitHub Releases:
 
 ```bash
-git tag -a v0.3 -m "BM Spectrum v0.3"
-git push origin v0.3
+git tag -a v0.3.2 -m "BM Spectrum v0.3.2"
+git push origin v0.3.2
 ```
 
 macOS bundles are currently not notarized. They may need to be opened through

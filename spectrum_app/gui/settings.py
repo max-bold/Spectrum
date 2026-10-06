@@ -266,7 +266,7 @@ class SettingsWindow:
         destination.clear()
         destination[default_label] = ""
         for device in devices:
-            destination[device.label] = device.id
+            destination[self._device_label(device)] = device.id
 
         selected_label = default_label
         if selected_id:
@@ -275,11 +275,15 @@ class SettingsWindow:
                 None,
             )
             if selected is not None:
-                selected_label = selected.label
+                selected_label = self._device_label(selected)
             else:
                 selected_label = self._unavailable_device_label(selected_id)
                 destination[selected_label] = selected_id
         return list(destination), selected_label
+
+    @staticmethod
+    def _device_label(device) -> str:
+        return f"{device.label} - {device.sample_rate / 1000:g} kHz"
 
     @staticmethod
     def _unavailable_device_label(device_id: str) -> str:
