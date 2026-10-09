@@ -1,35 +1,40 @@
 # Release process
 
-Development is committed to `dev`. Releases are prepared in a separate
-`release/vX.Y.Z` branch and transferred to `main` as one release commit.
-The version tag is placed on that final `main` commit.
+Development is committed to `dev`. Push an annotated version tag on the chosen
+`dev` commit to start `.github/workflows/release.yml`, for example:
 
-1. Update `spectrum_app/version.py`, the splash version artwork, README,
-   changelog and TODO. Run the test suite and verify a local packaged build.
-2. Commit and push `dev`.
-3. Create `release/vX.Y.Z` from that development commit in a separate checkout.
-4. Remove development-only files from the release checkout: `.vscode`,
-   `Spectrum.code-workspace`, `TODO.md`, `info`, `sandbox`, `artifacts`,
-   `spectrum_app_old`, `tests_old`, `utils`, scratch screenshots and experimental
-   `docs/analog_thd_assets`. Keep application sources, tests, packaging,
-   documentation, changelog and branding assets.
-5. Check README links and dependencies, run tests in the cleaned checkout,
-   then commit and push the release branch.
-6. Start another checkout at the latest `origin/main`. Replace its tracked
-   contents with the prepared release tree and commit `Release vX.Y.Z`.
-   This preserves the independent history of `main`; do not merge all of `dev`.
-7. Verify that the release branch and new `main` commit have identical trees,
-   run tests, and push `main` without force.
-8. Create an annotated `vX.Y.Z` tag on the final `main` commit and push it.
-   Never reuse or move an already published version tag.
-9. Follow `.github/workflows/release.yml`: all three builds (Windows x86_64,
-   macOS Intel, macOS Apple Silicon) must pass before the publish job runs.
-   Verify the GitHub Release and its three ZIP assets.
+```bash
+git switch dev
+git push origin dev
+git tag -a v0.3.2a -m "BM Spectrum v0.3.2a"
+git push origin v0.3.2a
+```
 
-Keep the development checkout on `dev`; cleanup applies only to the separate
-release checkout. If CI fails, diagnose it before deciding how to correct the
-release; do not silently replace published tags or binaries.
+Before tagging, update the application version, splash artwork, README and
+changelog as appropriate. A suffix such as `a` may label a packaging revision
+without changing the embedded application version.
 
-Historical tags differ: `v0.3.1` points to the prepared release-branch commit,
-while `v0.3` points to the final `main` commit. Their corresponding trees match.
-Starting with `v0.3.2`, tags consistently identify the final `main` commit.
+Actions verifies that the tagged commit belongs to `dev`, removes development
+files from an isolated checkout, and archives the resulting Git tree. Windows,
+macOS Intel and macOS Apple Silicon all test and build that exact archive.
+Only after all three builds pass does the publish job replace the tracked tree
+of `main` with those same sources and create a single release commit. It pushes
+without force, preserving the independent history of `main`, then publishes
+the GitHub Release and its three ZIP assets against the original tag on `dev`.
+No release branch or additional tag on `main` is needed. GitHub's automatic
+source downloads contain the original dev tree; `main` contains the clean tree.
+
+The cleanup excludes `.vscode`, `Spectrum.code-workspace`, `TODO.md`, `info`,
+`sandbox`, `artifacts`, `spectrum_app_old`, `tests_old`, `utils`, scratch root
+screenshots and `docs/analog_thd_assets`. Application sources, tests, packaging,
+documentation, changelog and branding assets remain.
+
+Release runs are serialized. The workflow needs permission to write repository
+contents and rules for `main` must permit its push. If testing or building fails,
+`main` and GitHub Releases remain unchanged. If publication fails after the main
+push, rerun the failed job; an identical tree does not create another commit.
+Never move or reuse a published tag. Inspect the Actions run and all three ZIP
+assets after release. Manual workflow dispatch builds clean sources without
+updating `main` or publishing a release.
+
+Historical tags through `v0.3.2` retain their original locations.
