@@ -84,15 +84,17 @@ before adding a module.
 
 ## Release builds
 
-See [the release process](docs/design/release-process.md) for branch preparation,
-cleanup, transfer to `main`, tagging and publication checks.
+See [the release process](docs/design/release-process.md) for automated source
+cleanup, transfer to `main` and publication checks.
 
-Pushing a version tag builds Windows, macOS Intel and macOS Apple Silicon
+Pushing a version tag on `dev` automatically prepares `main`, builds Windows, macOS Intel and macOS Apple Silicon
 archives and publishes them to GitHub Releases:
 
 ```bash
-git tag -a v0.3.2 -m "BM Spectrum v0.3.2"
-git push origin v0.3.2
+git switch dev
+git push origin dev
+git tag -a v0.3.2a -m "BM Spectrum v0.3.2a"
+git push origin v0.3.2a
 ```
 
 macOS bundles are currently not notarized. They may need to be opened through

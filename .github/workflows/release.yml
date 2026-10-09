@@ -14,8 +14,40 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    outputs:
+      tree: ${{ steps.source.outputs.tree }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate release source
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9.-]*$ ]]
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/dev
+      - name: Prepare clean source archive
+        id: source
+        shell: bash
+        run: |
+          git rm -r --ignore-unmatch -- .vscode Spectrum.code-workspace TODO.md info sandbox artifacts spectrum_app_old tests_old utils docs/analog_thd_assets native_layout_test.png plotpng1.png
+          tree=$(git write-tree)
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          git archive --format=tar "$tree" > "$RUNNER_TEMP/release-source.tar"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-source
+          path: ${{ runner.temp }}/release-source.tar
+
   build:
+    needs: prepare
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -40,11 +72,23 @@ jobs:
       PYINSTALLER_TARGET_ARCH: ${{ matrix.pyinstaller_target_arch }}
 
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-source
+          path: ${{ runner.temp }}/source
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Extract prepared sources
+        shell: python
+        run: |
+          import os
+          import tarfile
+          from pathlib import Path
+          archive = Path(os.environ["RUNNER_TEMP"]) / "source" / "release-source.tar"
+          with tarfile.open(archive) as source:
+              source.extractall(filter="data")
 
       - name: Install dependencies
         run: |
@@ -89,12 +133,36 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    needs: build
+    needs: [prepare, build]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
+          name: release-source
+          path: ${{ runner.temp }}/source
+      - name: Transfer verified release tree to main
+        env:
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r --ignore-unmatch .
+          tar -xf "$RUNNER_TEMP/source/release-source.tar"
+          git add -A
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          if ! git diff --cached --quiet; then
+            git commit -m "Release $GITHUB_REF_NAME" -m "Source: $GITHUB_SHA"
+          fi
+          git push origin HEAD:main
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: BM_Spectrum_*
           path: release-assets
           merge-multiple: true
 
