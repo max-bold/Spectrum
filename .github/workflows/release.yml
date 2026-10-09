@@ -76,13 +76,19 @@ jobs:
         with:
           name: release-source
           path: ${{ runner.temp }}/source
-      - name: Extract prepared sources
-        shell: bash
-        run: tar -xf "$RUNNER_TEMP/source/release-source.tar"
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Extract prepared sources
+        shell: python
+        run: |
+          import os
+          import tarfile
+          from pathlib import Path
+          archive = Path(os.environ["RUNNER_TEMP"]) / "source" / "release-source.tar"
+          with tarfile.open(archive) as source:
+              source.extractall(filter="data")
 
       - name: Install dependencies
         run: |
